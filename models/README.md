@@ -1,0 +1,1 @@
+Download `pose_landmarker_lite.task` by running `python scripts/download_model.py` from repository root. The model is intentionally not included in the kit. Official model: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
