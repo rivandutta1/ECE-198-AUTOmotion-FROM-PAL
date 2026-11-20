@@ -30,7 +30,8 @@ def run_camera():
 
             if not success:
                 raise RuntimeError("ERROR: Camera Disconnected")
-
+            
+            frame = cv2.flip(frame, 1)
             timestamp_ms = int(time.monotonic() * 1000)
 
             pose = process_frame(frame, timestamp_ms, landmarker)
@@ -54,7 +55,8 @@ def run_camera():
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-
+            if cv2.getWindowProperty("AUTO-MOTION", cv2.WND_PROP_VISIBLE) < 1:
+                break
     finally:
         camera.release()
         cv2.destroyAllWindows()
