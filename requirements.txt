@@ -1,8 +1,0 @@
-# Shared cross-platform direct dependencies. All members use Python 3.11.
-# Use only one OpenCV package (contrib): many MediaPipe releases depend on it.
-# After the first clean Windows install succeeds, record working exact versions
-# in this file and commit that change before the other members reinstall.
-mediapipe>=0.10,<2
-opencv-contrib-python>=4.8,<5
-pyserial>=3.5,<4
-pytest>=8,<10
