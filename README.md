@@ -39,10 +39,14 @@ Use the in-app Arduino button to reconnect after plugging the board back in.
    **Adafruit GFX Library**, including their dependencies. Select
    **Arduino UNO R4 Minima** if that is your board, select its USB port, and click
    **Upload**.
-3. Start the root app. The OLED should show the exercise, GOOD/BAD/UNKNOWN, and
-   the app's rep count. Arm feedback takes over automatically in either physical
-   mode. When packets stop for about 1.2 seconds, the standalone chest/shoulder
-   display returns.
+3. Start the root app. The first valid feedback packet selects Desktop mode and
+   shows the exercise, GOOD/BAD/UNKNOWN, and the app's rep count.
+4. Press the board's button to cycle **Shoulder → Chest → Desktop → Shoulder**.
+   The `>` marks the active standalone mode. Incoming packets keep Desktop
+   feedback current while you use Shoulder or Chest.
+5. After 1.2 seconds without valid packets, Desktop shows **NO CONNECTION**.
+   You can still cycle modes, including entering Desktop while offline. The
+   first valid packet after a timeout selects Desktop again.
 
 To check the OLED separately, quit the app and open Serial Monitor at 115200
 with newline enabled. Send `F,CURL,GOOD,OK,3` and check for **BICEP CURL**, **GOOD**,

@@ -13,6 +13,7 @@ enum MotionExercise { NO_ARM_EXERCISE, CURL, PUSHDOWN };
 static MotionStatus motionStatus = CANNOT_ASSESS;
 static MotionExercise motionExercise = NO_ARM_EXERCISE;
 static unsigned int motionReps = 0;
+static bool motionConnected = false;
 static char motionBuffer[30];
 static uint8_t motionCharsRead = 0;
 static bool motionDiscardLine = false;
@@ -71,6 +72,7 @@ inline void motionParsePacket(char *line) {
         return;
     }
     motionStatus = status;
+    motionConnected = true;
     motionLastStatusMs = millis();
 }
 
@@ -95,17 +97,20 @@ inline void motionReadSerial() {
     }
 }
 
-// Redraw on exercise or rep changes even when the form status is unchanged.
+// Connection, exercise, status, and reps all affect the Desktop display.
 inline bool motionUpdate() {
+    bool wasConnected = motionConnected;
     MotionStatus previousStatus = motionStatus;
     MotionExercise previousExercise = motionExercise;
     unsigned int previousReps = motionReps;
     motionReadSerial();
-    if (millis() - motionLastStatusMs > MOTION_TIMEOUT_MS) {
+    if (motionConnected && millis() - motionLastStatusMs >= MOTION_TIMEOUT_MS) {
+        motionConnected = false;
         motionStatus = CANNOT_ASSESS;
         motionExercise = NO_ARM_EXERCISE;
     }
-    return motionStatus != previousStatus || motionExercise != previousExercise ||
+    return motionConnected != wasConnected || motionStatus != previousStatus ||
+           motionExercise != previousExercise ||
            (motionExercise != NO_ARM_EXERCISE && motionReps != previousReps);
 }
 
@@ -116,26 +121,26 @@ inline void motionDrawCentered(const char *text, int y, uint8_t size) {
     display.setTextSize(1);
 }
 
-inline void drawArmFeedback() {
-    motionDrawCentered(motionExercise == CURL ? "BICEP CURL" : "TRICEP PUSHDOWN", 4, 1);
+inline void drawDesktopFeedback() {
+    if (!motionConnected) {
+        motionDrawCentered("DESKTOP", 4, 1);
+        motionDrawCentered("NO CONNECTION", 25, 1);
+        motionDrawCentered("Waiting for app", 42, 1);
+        return;
+    }
+
+    const char *title = "DESKTOP";
+    if (motionExercise == CURL) title = "BICEP CURL";
+    else if (motionExercise == PUSHDOWN) title = "TRICEP PUSHDOWN";
+    motionDrawCentered(title, 4, 1);
+
     const char *label = motionStatus == FORM_GOOD ? "GOOD" :
                         motionStatus == FORM_BAD ? "BAD" : "UNKNOWN";
     motionDrawCentered(label, 23, 2);
-    display.setCursor(0, 51);
-    display.print("Reps: ");
-    display.print(motionReps);
-}
-
-inline void drawMotionStatus() {
-    if (motionStatus == FORM_GOOD) {
-        motionDrawCentered("GOOD", 39, 2);
-        motionDrawCentered("No major lean", 56, 1);
-    } else if (motionStatus == FORM_BAD) {
-        motionDrawCentered("BAD", 39, 2);
-        motionDrawCentered("Large torso lean", 56, 1);
-    } else {
-        motionDrawCentered("CANNOT ASSESS", 42, 1);
-        motionDrawCentered("Check camera/pose", 56, 1);
+    if (motionExercise != NO_ARM_EXERCISE) {
+        display.setCursor(0, 51);
+        display.print("Reps: ");
+        display.print(motionReps);
     }
 }
 

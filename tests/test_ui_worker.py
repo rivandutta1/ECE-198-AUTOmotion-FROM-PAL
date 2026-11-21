@@ -5,13 +5,16 @@ import time
 import types
 
 import numpy as np
+import pytest
 
 import main
 
 
-def test_worker_background_operations_without_real_webcam(monkeypatch):
+@pytest.mark.parametrize("camera_one_available", [True, False])
+def test_worker_background_operations_without_real_webcam(monkeypatch, camera_one_available):
     closed = threading.Event()
     sent_feedback = []
+    camera_attempts = []
 
     class FakeCapture:
         def read(self):
@@ -36,7 +39,13 @@ def test_worker_background_operations_without_real_webcam(monkeypatch):
             pass
 
     monkeypatch.setitem(sys.modules, "src.vision", types.SimpleNamespace(VisionTracker=FakeTracker))
-    monkeypatch.setattr(main, "camera_setup", lambda *a, **kw: FakeCapture())
+    def open_camera(index, *_args):
+        camera_attempts.append(index)
+        if index == 1 and not camera_one_available:
+            raise RuntimeError("Camera unavailable")
+        return FakeCapture()
+
+    monkeypatch.setattr(main, "camera_setup", open_camera)
     monkeypatch.setattr(main, "make_link", lambda port: (FakeLink(), "test USB"))
     args = types.SimpleNamespace(
         exercise="curl", side="right", camera=1,
@@ -59,6 +68,7 @@ def test_worker_background_operations_without_real_webcam(monkeypatch):
         assert snapshot.exercise == "pushdown"
         assert snapshot.side == "left"
         assert snapshot.feedback.status == "UNKNOWN"
+        assert camera_attempts == ([1] if camera_one_available else [1, 0])
         assert snapshot.arduino_connected
         assert sent_feedback[0] == ("CURL", "UNKNOWN", "TRACK", 0)
         assert sent_feedback[-1] == ("PUSHDOWN", "UNKNOWN", "TRACK", 0)

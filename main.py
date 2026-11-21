@@ -31,6 +31,7 @@ def camera_setup(camera_index: int, width: int = 1280,
                  height: int = 720, camera_fps: int = 30):
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
+        cap.release()
         raise RuntimeError("Camera unavailable: try CHANGE CAMERA or check macOS permissions")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -129,10 +130,17 @@ class CameraWorker:
         error = None
         try:
             from src.vision import VisionTracker
-            cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
+            try:
+                cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
+            except (RuntimeError, cv2.error):
+                if camera_index == 0:
+                    raise
+                print(f"Camera {camera_index} unavailable; trying camera 0", flush=True)
+                camera_index = 0
+                cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
             tracker = VisionTracker(ROOT / "models" / f"pose_landmarker_{a.model}.task")
             link, message = make_link(a.port)
-            print(message)
+            print(message, flush=True)
             while not self._stop.is_set():
                 while True:
                     try:
@@ -163,7 +171,7 @@ class CameraWorker:
                         if link is not None:
                             link.close()
                         link, message = make_link(a.port)
-                        print(message)
+                        print(message, flush=True)
                     elif action == "camera":
                         for i in range(1,4):
                             candidate = (camera_index + i) % 4
@@ -217,7 +225,7 @@ class CameraWorker:
                         link.send_feedback(exercise.upper(), result.status, result.issue,
                                            result.reps)
                     except Exception as exc:
-                        print(f"Arduino disconnected: {exc}")
+                        print(f"Arduino disconnected: {exc}", flush=True)
                         link.close()
                     last_send = now
                 self._publish(Snapshot(latest_frame, latest_landmarks, result,
@@ -225,7 +233,7 @@ class CameraWorker:
                                        camera_fps))
         except Exception as exc:
             error = str(exc)
-            print("AutoMotion camera worker:", error)
+            print("AutoMotion camera worker:", error, flush=True)
             self._publish(Snapshot(latest_frame, None,
                                    Feedback("UNKNOWN", error, "TRACK", 0, 0, "WAITING"),
                                    exercise, side, False, camera_fps, error))

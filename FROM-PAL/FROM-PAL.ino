@@ -25,7 +25,8 @@ struct Button {
 
 Button button = {2, false, false, 0};   // Mode switch
 
-bool isChestPress = true;
+enum DisplayMode { SHOULDER_MODE, CHEST_MODE, DESKTOP_MODE };
+DisplayMode displayMode = CHEST_MODE;
 
 int maxChestROM = 0;
 int maxShoulderROM = 0;
@@ -89,19 +90,34 @@ void setup() {
 }
 
 void loop() {
-    if (motionUpdate()) updateDisplay();
+    const bool wasConnected = motionConnected;
+    const bool feedbackChanged = motionUpdate();
+    const DisplayMode previousMode = displayMode;
 
-    // Button 1: switch mode, once per press
     if (wasPressed(button)) {
-        isChestPress = !isChestPress;
-        startingDistance = getDistance();
-        resetTracking();
+        switch (displayMode) {
+            case SHOULDER_MODE: displayMode = CHEST_MODE; break;
+            case CHEST_MODE: displayMode = DESKTOP_MODE; break;
+            case DESKTOP_MODE: displayMode = SHOULDER_MODE; break;
+        }
         Serial.println("Switched modes");
+    } else if (!wasConnected && motionConnected) {
+        // Auto-select Desktop once per connection. The button can leave it
+        // while packets continue to arrive.
+        displayMode = DESKTOP_MODE;
+    }
+
+    if (displayMode != previousMode) {
+        if (displayMode != DESKTOP_MODE) {
+            startingDistance = getDistance();
+            resetTracking();
+        }
+        updateDisplay();
+    } else if (displayMode == DESKTOP_MODE && feedbackChanged) {
         updateDisplay();
     }
 
-    // Automatic rep detection
-    if (millis() - lastSampleMs >= SAMPLE_INTERVAL_MS) {
+    if (displayMode != DESKTOP_MODE && millis() - lastSampleMs >= SAMPLE_INTERVAL_MS) {
         lastSampleMs = millis();
         trackDistance();
     }
@@ -121,6 +137,7 @@ void registerRep(int currentDistance) {
     int difference = abs(startingDistance - currentDistance);
     startingDistance = currentDistance;
 
+    const bool isChestPress = displayMode == CHEST_MODE;
     if (isChestPress) repCountChest++;
     else repCountShoulder++;
 
@@ -188,27 +205,25 @@ void updateDisplay() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
-    if (motionExercise != NO_ARM_EXERCISE) {
-        drawArmFeedback();
+    if (displayMode == DESKTOP_MODE) {
+        drawDesktopFeedback();
         display.display();
         return;
     }
 
     // Line 1: Chest
     display.setCursor(0, 10);
-    display.print("Chest: ");
+    display.print(displayMode == CHEST_MODE ? ">Chest: " : " Chest: ");
     display.print(maxChestROM);
     display.print("cm; ");
     display.print(repCountChest / 2);
 
     // Line 2: Shoulder
     display.setCursor(0, 30);
-    display.print("Shoulder: ");
+    display.print(displayMode == SHOULDER_MODE ? ">Shoulder: " : " Shoulder: ");
     display.print(maxShoulderROM);
     display.print("cm; ");
     display.print(repCountShoulder / 2);
-
-    if (!isChestPress) drawMotionStatus();
 
     display.display();
 }
