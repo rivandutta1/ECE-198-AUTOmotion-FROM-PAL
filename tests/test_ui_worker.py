@@ -11,6 +11,7 @@ import main
 
 def test_worker_background_operations_without_real_webcam(monkeypatch):
     closed = threading.Event()
+    sent_feedback = []
 
     class FakeCapture:
         def read(self):
@@ -28,9 +29,9 @@ def test_worker_background_operations_without_real_webcam(monkeypatch):
             pass
 
     class FakeLink:
-        connection = None
+        connection = object()
         def send_feedback(self, *args):
-            pass
+            sent_feedback.append(args)
         def close(self):
             pass
 
@@ -58,6 +59,9 @@ def test_worker_background_operations_without_real_webcam(monkeypatch):
         assert snapshot.exercise == "pushdown"
         assert snapshot.side == "left"
         assert snapshot.feedback.status == "UNKNOWN"
+        assert snapshot.arduino_connected
+        assert sent_feedback[0] == ("CURL", "UNKNOWN", "TRACK", 0)
+        assert sent_feedback[-1] == ("PUSHDOWN", "UNKNOWN", "TRACK", 0)
         # The main thread can get snapshots immediately, despite slow read.
         t0 = time.perf_counter()
         worker.snapshot()

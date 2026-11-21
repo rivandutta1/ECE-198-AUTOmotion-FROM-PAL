@@ -5,27 +5,72 @@
 #include <string.h>
 #include <Adafruit_SSD1306.h>
 
-// Shares the OLED object defined in Project.ino
 extern Adafruit_SSD1306 display;
 
-// Python sends one line per update: S,GOOD / S,BAD / S,UNKNOWN
 enum MotionStatus { CANNOT_ASSESS, FORM_GOOD, FORM_BAD };
+enum MotionExercise { NO_ARM_EXERCISE, CURL, PUSHDOWN };
 
 static MotionStatus motionStatus = CANNOT_ASSESS;
+static MotionExercise motionExercise = NO_ARM_EXERCISE;
+static unsigned int motionReps = 0;
 static char motionBuffer[30];
 static uint8_t motionCharsRead = 0;
+static bool motionDiscardLine = false;
 static unsigned long motionLastStatusMs = 0;
 
-const unsigned long MOTION_TIMEOUT_MS = 1200;   // no packet for this long -> CANNOT ASSESS
+const unsigned long MOTION_TIMEOUT_MS = 1200;
 
-inline void motionParsePacket(const char *line) {
-    if (strncmp(line, "S,", 2) != 0) return;
-    const char *value = line + 2;
+inline bool motionParseStatus(const char *value, MotionStatus &status) {
+    if (strcmp(value, "GOOD") == 0) status = FORM_GOOD;
+    else if (strcmp(value, "BAD") == 0) status = FORM_BAD;
+    else if (strcmp(value, "UNKNOWN") == 0) status = CANNOT_ASSESS;
+    else return false;
+    return true;
+}
 
-    if (strcmp(value, "GOOD") == 0) motionStatus = FORM_GOOD;
-    else if (strcmp(value, "BAD") == 0) motionStatus = FORM_BAD;
-    else if (strcmp(value, "UNKNOWN") == 0) motionStatus = CANNOT_ASSESS;
-    else return;
+inline void motionParsePacket(char *line) {
+    MotionStatus status;
+    if (strncmp(line, "S,", 2) == 0) {
+        if (!motionParseStatus(line + 2, status)) return;
+        motionExercise = NO_ARM_EXERCISE;
+    } else if (strncmp(line, "F,", 2) == 0) {
+        char *fields[] = {line + 2, nullptr, nullptr, nullptr};
+        for (uint8_t i = 1; i < 4; i++) {
+            char *comma = strchr(fields[i - 1], ',');
+            if (!comma) return;
+            *comma = '\0';
+            fields[i] = comma + 1;
+        }
+        MotionExercise exercise;
+        if (strcmp(fields[0], "CURL") == 0) exercise = CURL;
+        else if (strcmp(fields[0], "PUSHDOWN") == 0) exercise = PUSHDOWN;
+        else return;
+        if (!motionParseStatus(fields[1], status)) return;
+
+        const char *issues[] = {"OK", "TRACK", "CAL", "START", "IDLE",
+                                "LEAN", "ARM", "ROM", "FORM"};
+        bool validIssue = false;
+        for (const char *issue : issues) {
+            if (strcmp(fields[2], issue) == 0) {
+                validIssue = true;
+                break;
+            }
+        }
+        if (!validIssue) return;
+
+        size_t digits = strlen(fields[3]);
+        if (digits == 0 || digits > 4) return;
+        unsigned int reps = 0;
+        for (const char *digit = fields[3]; *digit; digit++) {
+            if (*digit < '0' || *digit > '9') return;
+            reps = reps * 10 + (*digit - '0');
+        }
+        motionExercise = exercise;
+        motionReps = reps;
+    } else {
+        return;
+    }
+    motionStatus = status;
     motionLastStatusMs = millis();
 }
 
@@ -34,23 +79,34 @@ inline void motionReadSerial() {
         char ch = (char) Serial.read();
         if (ch == '\r') continue;
         if (ch == '\n') {
-            motionBuffer[motionCharsRead] = '\0';
-            motionParsePacket(motionBuffer);
+            if (!motionDiscardLine) {
+                motionBuffer[motionCharsRead] = '\0';
+                motionParsePacket(motionBuffer);
+            }
             motionCharsRead = 0;
-        } else if (motionCharsRead < sizeof(motionBuffer) - 1) {
-            motionBuffer[motionCharsRead++] = ch;
-        } else {
-            motionCharsRead = 0;   // discard oversized line
+            motionDiscardLine = false;
+        } else if (!motionDiscardLine) {
+            if (ch >= ' ' && ch <= '~' && motionCharsRead < sizeof(motionBuffer) - 1) {
+                motionBuffer[motionCharsRead++] = ch;
+            } else {
+                motionDiscardLine = true;
+            }
         }
     }
 }
 
-// Call every loop. Returns true when the status changed and the screen needs a redraw.
+// Redraw on exercise or rep changes even when the form status is unchanged.
 inline bool motionUpdate() {
-    MotionStatus previous = motionStatus;
+    MotionStatus previousStatus = motionStatus;
+    MotionExercise previousExercise = motionExercise;
+    unsigned int previousReps = motionReps;
     motionReadSerial();
-    if (millis() - motionLastStatusMs > MOTION_TIMEOUT_MS) motionStatus = CANNOT_ASSESS;
-    return motionStatus != previous;
+    if (millis() - motionLastStatusMs > MOTION_TIMEOUT_MS) {
+        motionStatus = CANNOT_ASSESS;
+        motionExercise = NO_ARM_EXERCISE;
+    }
+    return motionStatus != previousStatus || motionExercise != previousExercise ||
+           (motionExercise != NO_ARM_EXERCISE && motionReps != previousReps);
 }
 
 inline void motionDrawCentered(const char *text, int y, uint8_t size) {
@@ -60,7 +116,16 @@ inline void motionDrawCentered(const char *text, int y, uint8_t size) {
     display.setTextSize(1);
 }
 
-// Draws into the buffer only; caller is responsible for display.display()
+inline void drawArmFeedback() {
+    motionDrawCentered(motionExercise == CURL ? "BICEP CURL" : "TRICEP PUSHDOWN", 4, 1);
+    const char *label = motionStatus == FORM_GOOD ? "GOOD" :
+                        motionStatus == FORM_BAD ? "BAD" : "UNKNOWN";
+    motionDrawCentered(label, 23, 2);
+    display.setCursor(0, 51);
+    display.print("Reps: ");
+    display.print(motionReps);
+}
+
 inline void drawMotionStatus() {
     if (motionStatus == FORM_GOOD) {
         motionDrawCentered("GOOD", 39, 2);

@@ -7,6 +7,7 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool oledReady = false;
 
 // I2C with ultrasonic sensor
 const int TRIG_PIN = 5;
@@ -75,19 +76,20 @@ void setup() {
     startingDistance = getDistance();
     resetTracking();
 
-    // OLED display setup
-    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-
-    // Initial screen display
+    Wire.begin();
+    for (uint8_t address = 0x3C; address <= 0x3D; address++) {
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() == 0) {
+            oledReady = display.begin(SSD1306_SWITCHCAPVCC, address, true, false);
+            break;
+        }
+    }
+    if (!oledReady) Serial.println("OLED unavailable: check SSD1306 wiring and I2C address");
     updateDisplay();
 }
 
 void loop() {
-    // Form status from Python; only shown in shoulder mode
-    if (motionUpdate() && !isChestPress) updateDisplay();
+    if (motionUpdate()) updateDisplay();
 
     // Button 1: switch mode, once per press
     if (wasPressed(button)) {
@@ -181,9 +183,16 @@ void trackDistance() {
 }
 
 void updateDisplay() {
+    if (!oledReady) return;
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
+
+    if (motionExercise != NO_ARM_EXERCISE) {
+        drawArmFeedback();
+        display.display();
+        return;
+    }
 
     // Line 1: Chest
     display.setCursor(0, 10);

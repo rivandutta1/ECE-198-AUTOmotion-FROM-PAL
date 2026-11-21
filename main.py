@@ -9,18 +9,21 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
 
 import cv2
 import numpy as np
 
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "Auto-motion"))
+
 from src.app_modes import EXERCISES, SIDES, EXERCISE_NAMES, create_monitor, evaluate_monitor
 from src.arm_exercises import Feedback
 from src.arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
 from src.serial_link import SerialLink, find_arduino_port
 
-ROOT = Path(__file__).resolve().parent
 TARGET_UI_HZ = 60.0
 
 
@@ -241,7 +244,7 @@ def main(argv=None):
     parser.add_argument("--side", choices=SIDES, default="right")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--model", choices=("lite","full"), default="lite")
-    parser.add_argument("--port", default=None)
+    parser.add_argument("--port", help="Arduino USB port (auto-detected when omitted)")
     parser.add_argument("--camera-width", type=int, default=1280)
     parser.add_argument("--camera-height", type=int, default=720)
     parser.add_argument("--camera-fps", type=int, default=30)
