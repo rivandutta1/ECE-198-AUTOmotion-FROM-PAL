@@ -6,3 +6,4 @@ mediapipe>=0.10,<2
 opencv-contrib-python>=4.8,<5
 pyserial>=3.5,<4
 pytest>=8,<10
+Pillow>=10,<13  # UI fonts; Metro Nova itself is NOT bundled

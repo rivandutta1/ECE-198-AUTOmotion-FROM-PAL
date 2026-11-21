@@ -1,121 +1,336 @@
-"""AUTO-MOTION Tuesday demo: live one-person shoulder-press lean warning.
+"""AutoMotion: independent 60 Hz UI and asynchronous camera/pose/Arduino work.
 
-Python performs ALL pose estimation, calibration and decisions.
-Arduino UNO R4 Minima ONLY displays GOOD / BAD / CANNOT ASSESS.
+OpenCV HighGUI's rendering cadence is a *target*, not a screen vsync guarantee.
+Camera and inference can run at 24-30 FPS without freezing interactive controls.
 """
+from __future__ import annotations
+
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
-import sys
+import queue
+import threading
 import time
 
 import cv2
+import numpy as np
 
-from src.form_rules import FormMonitor, UNKNOWN
-from src.geometry import SIDE_INDEX, measure_pose
-from src.serial_link import SerialLink
-from src.vision import VisionTracker
+from src.app_modes import EXERCISES, SIDES, EXERCISE_NAMES, create_monitor, evaluate_monitor
+from src.arm_exercises import Feedback
+from src.arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
+from src.serial_link import SerialLink, find_arduino_port
 
 ROOT = Path(__file__).resolve().parent
+TARGET_UI_HZ = 60.0
 
 
-def draw_overlay(frame, landmarks, side, decision, baseline):
-    h, w = frame.shape[:2]
-    colors = {"GOOD": (0, 190, 0), "BAD": (0, 0, 230), "UNKNOWN": (135, 135, 135)}
-    color = colors[decision.status]
-
-    if landmarks:
-        shoulder, elbow, wrist, hip = SIDE_INDEX[side]
-        ids = (hip, shoulder, elbow, wrist)
-        points = []
-        for i in ids:
-            lm = landmarks[i]
-            p = (int(lm.x * w), int(lm.y * h))
-            points.append(p)
-            cv2.circle(frame, p, 6, (240, 195, 0), -1)
-        for p0, p1 in zip(points, points[1:]):
-            cv2.line(frame, p0, p1, (240, 195, 0), 3)
-
-    cv2.rectangle(frame, (0, 0), (w, 132), (23, 26, 30), -1)
-    display_status = "CANNOT ASSESS" if decision.status == UNKNOWN else decision.status
-    cv2.putText(frame, f"AUTO-MOTION: {display_status}", (15, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.76, color, 2, cv2.LINE_AA)
-    cv2.putText(frame, decision.detail[:55], (15, 72),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.53, (235, 235, 235), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"SIDE: {side.upper()} | BASELINE: {baseline:.1f} deg" if baseline is not None else f"SIDE: {side.upper()} | BASELINE: NOT SET",
-                (15, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.46,
-                (190, 195, 205), 1, cv2.LINE_AA)
-    if decision.deviation_deg is not None:
-        cv2.putText(frame, f"Torso change: {decision.deviation_deg:.1f} degrees",
-                    (max(10, w - 260), 72), cv2.FONT_HERSHEY_SIMPLEX, 0.43,
-                    (205, 210, 215), 1, cv2.LINE_AA)
-    cv2.putText(frame, "C=CALIBRATE (upright, arm DOWN)   Q=QUIT", (15, 123),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 195, 205), 1, cv2.LINE_AA)
-    return frame
-
-
-def main():
-    parser = argparse.ArgumentParser(description="3-state shoulder-press camera demo")
-    parser.add_argument("--side", choices=("left", "right"), default="left",
-                        help="which arm/torso side is visible to the camera")
-    parser.add_argument("--camera", type=int, default=0, help="OpenCV camera index")
-    parser.add_argument("--port", default=None,
-                        help="Arduino serial port (COM3 on Windows, /dev/cu... on macOS); omit for camera-only")
-    args = parser.parse_args()
-
-    cap = cv2.VideoCapture(args.camera)
+def camera_setup(camera_index: int, width: int = 1280,
+                 height: int = 720, camera_fps: int = 30):
+    cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
-        sys.exit("ERROR: Camera unavailable. Close Teams/Zoom, check privacy permissions, try --camera 1")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    tracker = None
-    link = None
-    try:
-        tracker = VisionTracker(ROOT / "models" / "pose_landmarker_lite.task")
-        link = SerialLink(args.port)
-        monitor = FormMonitor()
-        start = time.monotonic()
-        last_ts = -1
-        last_send = 0.0
-        print("READY. Face sideways to camera; include head, shoulder, hip and raised wrist.")
-        print("Press C while standing upright, arm DOWN; stay still for 2 seconds.")
-        print("Then raise arm for shoulder press; deliberately lean to test RED. Q exits.")
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                print("ERROR: Webcam stopped providing frames")
-                break
-            timestamp_ms = max(int((time.monotonic() - start) * 1000), last_ts + 1)
-            last_ts = timestamp_ms
-            landmarks = tracker.process(frame, timestamp_ms)
-            h, w = frame.shape[:2]
-            sample = measure_pose(landmarks, w, h, side=args.side)
-            decision = monitor.evaluate(sample, timestamp_ms)
-            draw_overlay(frame, landmarks, args.side, decision, monitor.baseline_deg)
-            cv2.imshow("AUTO-MOTION Shoulder Press", frame)
+        raise RuntimeError("Camera unavailable: try CHANGE CAMERA or check macOS permissions")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, camera_fps)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
 
-            # Refresh status even when unchanged; firmware times out after 1.2 s.
-            now = time.monotonic()
-            if now - last_send >= 0.2:
-                try:
-                    link.send(decision.status)
-                except Exception as exc:
-                    print(f"Arduino serial error: {exc}. Running camera-only.")
-                    link.close()
-                    link = SerialLink(None)
-                last_send = now
+
+def make_link(port):
+    candidate = port or find_arduino_port()
+    if not candidate:
+        return SerialLink(None), "No unambiguous Arduino USB port found"
+    try:
+        link = SerialLink(candidate)
+        return link, f"Arduino ready: {candidate}"
+    except Exception as exc:
+        return SerialLink(None), f"Could not connect to {candidate}: {exc}"
+
+
+def tracking_frame(frame, max_width: int):
+    """Keep a sharp preview; only reduce resolution for pose inference."""
+    h, w = frame.shape[:2]
+    if w <= max_width:
+        return frame, w, h
+    s = max_width / float(w)
+    tw, th = max(1, round(w*s)), max(1, round(h*s))
+    return cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA), tw, th
+
+
+def idle_feedback(message="Starting camera and pose tracker..."):
+    return Feedback("UNKNOWN", message, "CAL", 0, 0, "READY")
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    frame: np.ndarray
+    landmarks: object
+    feedback: Feedback
+    exercise: str
+    side: str
+    arduino_connected: bool
+    camera_fps: float
+    error: str | None = None
+
+
+class CameraWorker:
+    """Owns ALL blocking video, MediaPipe and serial operations, off the UI thread.
+
+    The main thread owns all OpenCV windows and mouse/keyboard handling.
+    A lock protects only a short immutable snapshot reference swap; no camera
+    reads, inference, serial operations, or rendering run under that lock.
+    """
+    def __init__(self, args):
+        self.args = args
+        self._lock = threading.Lock()
+        self._actions = queue.SimpleQueue()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="automotion-camera", daemon=True)
+        placeholder = np.full((720, 1280, 3), (24, 22, 21), dtype=np.uint8)
+        self._snapshot = Snapshot(placeholder, None, idle_feedback(),
+                                  args.exercise, args.side, False, 0.0)
+
+    def start(self):
+        self._thread.start()
+
+    def send(self, action: str):
+        self._actions.put(action)
+
+    def snapshot(self) -> Snapshot:
+        with self._lock:
+            return self._snapshot
+
+    def _publish(self, snapshot):
+        with self._lock:
+            self._snapshot = snapshot
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=3.0)
+
+    def _run(self):
+        cap = None
+        tracker = None
+        link = None
+        a = self.args
+        exercise, side, camera_index = a.exercise, a.side, a.camera
+        monitor = create_monitor(exercise, side)
+        started = time.monotonic()
+        previous_ts = -1
+        last_send = -1.0
+        previous_frame_time = None
+        camera_fps = 0.0
+        latest_frame = self.snapshot().frame
+        latest_landmarks = None
+        result = idle_feedback()
+        error = None
+        try:
+            from src.vision import VisionTracker
+            cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
+            tracker = VisionTracker(ROOT / "models" / f"pose_landmarker_{a.model}.task")
+            link, message = make_link(a.port)
+            print(message)
+            while not self._stop.is_set():
+                while True:
+                    try:
+                        action = self._actions.get_nowait()
+                    except queue.Empty:
+                        break
+                    if action.startswith("mode:"):
+                        mode = action.split(":",1)[1]
+                        if mode in EXERCISES and mode != exercise:
+                            exercise = mode
+                            monitor = create_monitor(exercise, side)
+                            latest_landmarks = None
+                            result = idle_feedback("Press CALIBRATE for the new exercise")
+                            last_send = -1.0
+                    elif action.startswith("side:"):
+                        new_side = action.split(":",1)[1]
+                        if new_side in SIDES and new_side != side:
+                            side = new_side
+                            monitor = create_monitor(exercise, side)
+                            latest_landmarks = None
+                            result = idle_feedback("Press CALIBRATE for the selected arm")
+                            last_send = -1.0
+                    elif action == "calibrate":
+                        monitor.start_calibration()
+                    elif action == "reset":
+                        monitor.reset_reps()
+                    elif action == "arduino":
+                        if link is not None:
+                            link.close()
+                        link, message = make_link(a.port)
+                        print(message)
+                    elif action == "camera":
+                        for i in range(1,4):
+                            candidate = (camera_index + i) % 4
+                            try:
+                                new_cap = camera_setup(candidate, a.camera_width,
+                                                       a.camera_height, a.camera_fps)
+                                ok, candidate_frame = new_cap.read()
+                                if not ok:
+                                    new_cap.release()
+                                    continue
+                            except (RuntimeError, cv2.error):
+                                continue
+                            cap.release()
+                            cap = new_cap
+                            camera_index = candidate
+                            monitor = create_monitor(exercise, side)
+                            result = idle_feedback("Camera changed; press CALIBRATE")
+                            latest_frame = candidate_frame
+                            latest_landmarks = None
+                            previous_frame_time = None
+                            camera_fps = 0.0
+                            print(f"Camera switched to {candidate}")
+                            break
+                        else:
+                            print("No other usable webcam found")
+
+                ok, frame = cap.read()
+                if not ok:
+                    raise RuntimeError("Camera stopped delivering frames")
+                now = time.monotonic()
+                if previous_frame_time is not None and now > previous_frame_time:
+                    measured_fps = min(90.0, 1.0/(now-previous_frame_time))
+                    camera_fps = measured_fps if not camera_fps else (.88*camera_fps+.12*measured_fps)
+                previous_frame_time = now
+                ms = max(int((now-started)*1000), previous_ts+1)
+                previous_ts = ms
+
+                pose_frame, track_w, track_h = tracking_frame(frame, a.tracking_width)
+                landmarks = tracker.process(pose_frame, ms)
+                result = evaluate_monitor(monitor, exercise, side,
+                                          landmarks, track_w, track_h, ms)
+                latest_frame = frame
+                latest_landmarks = landmarks
+                if a.debug_tracking:
+                    diagnostic = (exercise, side, result.status, result.issue, result.message)
+                    if getattr(self, "_last_diagnostic", None) != diagnostic:
+                        print(f"{ms/1000:.1f}s {exercise}/{side}: {result.status} - {result.message}")
+                        self._last_diagnostic = diagnostic
+                if now - last_send >= .20 and link is not None:
+                    try:
+                        link.send_feedback(exercise.upper(), result.status, result.issue,
+                                           result.reps)
+                    except Exception as exc:
+                        print(f"Arduino disconnected: {exc}")
+                        link.close()
+                    last_send = now
+                self._publish(Snapshot(latest_frame, latest_landmarks, result,
+                                       exercise, side, link is not None and link.connection is not None,
+                                       camera_fps))
+        except Exception as exc:
+            error = str(exc)
+            print("AutoMotion camera worker:", error)
+            self._publish(Snapshot(latest_frame, None,
+                                   Feedback("UNKNOWN", error, "TRACK", 0, 0, "WAITING"),
+                                   exercise, side, False, camera_fps, error))
+        finally:
+            if link is not None:
+                link.close()
+            if tracker is not None:
+                tracker.close()
+            if cap is not None:
+                cap.release()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="AutoMotion fitness feedback")
+    parser.add_argument("--exercise", choices=EXERCISES, default="curl")
+    parser.add_argument("--side", choices=SIDES, default="right")
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--model", choices=("lite","full"), default="lite")
+    parser.add_argument("--port", default=None)
+    parser.add_argument("--camera-width", type=int, default=1280)
+    parser.add_argument("--camera-height", type=int, default=720)
+    parser.add_argument("--camera-fps", type=int, default=30)
+    parser.add_argument("--tracking-width", type=int, default=960)
+    parser.add_argument("--ui-hz", type=float, default=TARGET_UI_HZ)
+    parser.add_argument("--debug-tracking", action="store_true")
+    args = parser.parse_args(argv)
+    if args.camera_width < 320 or args.camera_height < 240:
+        parser.error("Camera must be at least 320x240")
+    if args.camera_fps < 1 or args.camera_fps > 120:
+        parser.error("Camera fps must be from 1 to 120")
+    if args.tracking_width < 320:
+        parser.error("Tracking width must be at least 320")
+    if not 10 <= args.ui_hz <= 120:
+        parser.error("UI refresh target must be from 10 to 120 Hz")
+    cv2.setUseOptimized(True)
+    worker = CameraWorker(args)
+    mirrored = True
+    pending_clicks = []
+    window_created = False
+    try:
+        def clicked(event, x, y, flags, user_data):
+            if event == cv2.EVENT_LBUTTONUP:
+                action = hit_test(x, y)
+                if action:
+                    pending_clicks.append(action)
+
+        # All HighGUI calls stay on the main thread, which matters on macOS.
+        cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW_TITLE, WIDTH, HEIGHT)
+        cv2.setMouseCallback(WINDOW_TITLE, clicked)
+        window_created = True
+        worker.start()
+        frame_interval = 1.0 / args.ui_hz
+        next_frame_at = time.perf_counter()
+        previous_ui_frame = None
+        ui_fps = 0.0
+        shortcuts = {
+            ord("1"):"mode:curl", ord("2"):"mode:pushdown",
+            
+            ord("l"):"side:left", ord("L"):"side:left",
+            ord("r"):"side:right", ord("R"):"side:right",
+            ord("c"):"calibrate", ord("C"):"calibrate",
+            ord("m"):"mirror", ord("M"):"mirror",
+            ord("q"):"quit", ord("Q"):"quit", 27:"quit",
+        }
+        running = True
+        while running:
+            started = time.perf_counter()
+            if previous_ui_frame is not None:
+                elapsed = max(1e-6, started-previous_ui_frame)
+                measured = min(180.0, 1.0/elapsed)
+                ui_fps = measured if not ui_fps else (.85*ui_fps+.15*measured)
+            previous_ui_frame = started
+            snap = worker.snapshot()
+            h,w = snap.frame.shape[:2]
+            canvas = draw_screen(snap.frame, snap.landmarks, snap.side, snap.exercise,
+                                 snap.feedback, snap.arduino_connected, fps=ui_fps,
+                                 mirrored=mirrored, camera_resolution=(w,h),
+                                 camera_fps=snap.camera_fps)
+            cv2.imshow(WINDOW_TITLE, canvas)
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            try:
+                if cv2.getWindowProperty(WINDOW_TITLE, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+            except cv2.error:
                 break
-            if key == ord("c"):
-                monitor.start_calibration()
-                print("CALIBRATING: Stand upright, arm DOWN, hold still for 2 seconds.")
+            actions = pending_clicks[:]
+            pending_clicks.clear()
+            if key in shortcuts:
+                actions.append(shortcuts[key])
+            for action in actions:
+                if action == "quit":
+                    running = False
+                elif action == "mirror":
+                    mirrored = not mirrored
+                else:
+                    worker.send(action)
+
+            next_frame_at += frame_interval
+            remaining = next_frame_at - time.perf_counter()
+            if remaining > 0:
+                time.sleep(remaining)
+            elif remaining < -frame_interval:
+                next_frame_at = time.perf_counter()
     finally:
-        if link is not None:
-            link.close()
-        if tracker is not None:
-            tracker.close()
-        cap.release()
-        cv2.destroyAllWindows()
+        worker.stop()
+        if window_created:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
