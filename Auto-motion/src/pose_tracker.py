@@ -67,7 +67,16 @@ def process_frame(frame, timestamp_ms, landmarker):
                         y=float(point.y * height),
                         visibility=float(point.visibility)
                     )
+# Include hips for torso-lean analysis
+                for side, index in (("left", 23), ("right", 24)):
+                    point = landmarks[index]
 
+                    if point.visibility >= 0.6:
+                        landmark_data[f"{side}_hip"] = Landmark(
+                        x=float(point.x * width),
+                        y=float(point.y * height),
+                        visibility=float(point.visibility)
+                        )
         tracking_valid = bool(landmark_data)
 
     return PoseFrame(

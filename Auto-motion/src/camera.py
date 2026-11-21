@@ -2,6 +2,8 @@
 import cv2
 import time
 from .pose_tracker import create_pose_tracker, process_frame
+from .geometry import measure_pose_frame
+from .form_rules import FormMonitor
 
 def make_circle(landmark, frame):
     x = int(landmark.x)
@@ -15,7 +17,7 @@ def make_line(landmark1, landmark2, frame):
 
     cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-def run_camera():
+def run_camera(mode="shoulder"):
     camera = cv2.VideoCapture(0)
     landmarker = None
 
@@ -24,6 +26,7 @@ def run_camera():
             raise RuntimeError("ERROR: Camera Cannot Open")
 
         landmarker = create_pose_tracker()
+        form_monitor = FormMonitor()
 
         while True:
             success, frame = camera.read()
@@ -35,7 +38,42 @@ def run_camera():
             timestamp_ms = int(time.monotonic() * 1000)
 
             pose = process_frame(frame, timestamp_ms, landmarker)
+            if mode == "shoulder":
+                height, width = frame.shape[:2]
 
+                measurement = measure_pose_frame(
+                    pose,
+                    width,
+                    height,
+                    side="left"
+                )
+
+                decision = form_monitor.evaluate(
+                    measurement,
+                    timestamp_ms
+                )
+
+                cv2.putText(
+                    frame,
+                    f"FORM: {decision.status}",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0) if decision.status == "GOOD"
+                    else (0, 0, 255) if decision.status == "BAD"
+                    else (0, 255, 255),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    decision.detail,
+                    (20, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    2
+                )
 
             if pose.valid:
                 for side in ("left", "right"):
@@ -53,8 +91,14 @@ def run_camera():
 
             cv2.imshow("AUTO-MOTION", frame)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("q"):
                 break
+
+            if key == ord("c") and mode == "shoulder":
+                form_monitor.start_calibration()
+                
             if cv2.getWindowProperty("AUTO-MOTION", cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:

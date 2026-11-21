@@ -35,7 +35,7 @@ def main():
     if not args.no_arduino and args.port is None:
         parser.error("Specify --no-arduino or --port COMx.")
 
-    run_camera()
+    run_camera(args.mode)
 
 
 if __name__ == "__main__":
