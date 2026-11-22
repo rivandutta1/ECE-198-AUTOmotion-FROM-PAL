@@ -1,7 +1,7 @@
 """Dark minimal layout regression tests (keeps prior test filename compatible)."""
 import numpy as np
-from src.arm_exercises import Feedback
-import src.arm_ui as ui
+from arm_exercises import Feedback
+import arm_ui as ui
 
 
 def test_two_modes_two_arms_and_actions_clickable():

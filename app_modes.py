@@ -3,7 +3,7 @@
 The legacy press monitor remains as an unused file so shared branches are not
 silently deleted; it is not imported or reachable through the UI/CLI.
 """
-from src.arm_exercises import ArmExerciseMonitor, measure_arm
+from arm_exercises import ArmExerciseMonitor, measure_arm
 
 EXERCISES = ("curl", "pushdown")
 SIDES = ("right", "left")

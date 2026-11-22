@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from main import TARGET_UI_HZ, CameraWorker, Snapshot, tracking_frame, idle_feedback
-from src.arm_ui import draw_screen, WIDTH, HEIGHT
+from arm_ui import draw_screen, WIDTH, HEIGHT
 
 
 def test_target_ui_rate_is_60_hz():

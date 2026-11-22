@@ -1,5 +1,5 @@
 """Specific regressions for rep completion timing and last-frame errors."""
-from src.arm_exercises import ArmExerciseMonitor
+from arm_exercises import ArmExerciseMonitor
 from test_arm_exercises import calibrated, measurement
 
 
@@ -42,7 +42,7 @@ def test_last_frame_lean_warning_is_attributed_to_finished_rep():
 
 
 def test_missing_pose_does_not_report_good():
-    from src.arm_exercises import ArmPose
+    from arm_exercises import ArmPose
     m = calibrated("pushdown")
     f = m.evaluate(ArmPose(False,"MISSING ARM"), 2400)
     assert f.status == "UNKNOWN"

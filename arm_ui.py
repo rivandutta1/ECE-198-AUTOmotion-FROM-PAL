@@ -16,8 +16,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from src.arm_exercises import JOINTS, Feedback, _quality
-from src.app_modes import EXERCISE_NAMES
+from arm_exercises import JOINTS, Feedback, _quality
+from app_modes import EXERCISE_NAMES
 
 WIDTH, HEIGHT = 1600, 900
 WINDOW_TITLE = "AutoMotion"

@@ -38,7 +38,7 @@ def test_worker_background_operations_without_real_webcam(monkeypatch, camera_on
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "src.vision", types.SimpleNamespace(VisionTracker=FakeTracker))
+    monkeypatch.setitem(sys.modules, "vision", types.SimpleNamespace(VisionTracker=FakeTracker))
     def open_camera(index, *_args):
         camera_attempts.append(index)
         if index == 1 and not camera_one_available:

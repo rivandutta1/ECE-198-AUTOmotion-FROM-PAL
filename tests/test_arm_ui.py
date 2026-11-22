@@ -1,6 +1,6 @@
 import numpy as np
-from src.arm_exercises import Feedback
-from src.arm_ui import draw_screen
+from arm_exercises import Feedback
+from arm_ui import draw_screen
 
 
 def test_live_dashboard_shapes_and_unknown():

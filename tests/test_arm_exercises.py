@@ -4,7 +4,7 @@ from math import sin, cos, radians
 
 import pytest
 
-from src.arm_exercises import ArmExerciseMonitor, measure_arm, GOOD, BAD, UNKNOWN
+from arm_exercises import ArmExerciseMonitor, measure_arm, GOOD, BAD, UNKNOWN
 
 
 @dataclass

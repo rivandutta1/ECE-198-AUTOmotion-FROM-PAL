@@ -4,11 +4,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.arm_exercises import Feedback
-from src.app_modes import EXERCISES, SIDES, create_monitor
-from src.arm_ui import WIDTH, HEIGHT, controls, draw_screen, hit_test, point_in_preview
-from src.serial_link import feedback_packet, find_arduino_port
-import src.serial_link as serial_link
+from arm_exercises import Feedback
+from app_modes import EXERCISES, SIDES, create_monitor
+from arm_ui import WIDTH, HEIGHT, controls, draw_screen, hit_test, point_in_preview
+from serial_link import feedback_packet, find_arduino_port
+import serial_link as serial_link
 
 
 def test_only_two_arm_exercise_modes():

@@ -1,6 +1,6 @@
 import pytest
 
-from src.serial_link import feedback_packet, packet
+from serial_link import feedback_packet, packet
 
 
 def test_legacy_wire_format_unchanged():

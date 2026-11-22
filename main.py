@@ -11,7 +11,6 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import queue
-import sys
 import threading
 import time
 
@@ -19,12 +18,11 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "Auto-motion"))
 
-from src.app_modes import EXERCISES, SIDES, EXERCISE_NAMES, create_monitor, evaluate_monitor
-from src.arm_exercises import Feedback
-from src.arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
-from src.serial_link import SerialLink, find_arduino_port
+from app_modes import EXERCISES, SIDES, EXERCISE_NAMES, create_monitor, evaluate_monitor
+from arm_exercises import Feedback
+from arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
+from serial_link import SerialLink, find_arduino_port
 
 TARGET_UI_HZ = 60.0
 
@@ -131,7 +129,7 @@ class CameraWorker:
         result = idle_feedback()
         error = None
         try:
-            from src.vision import VisionTracker
+            from vision import VisionTracker
             try:
                 cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
             except (RuntimeError, cv2.error):

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_arm_exercises import points, measurement, calibrated
-from src.arm_exercises import ArmExerciseMonitor, measure_arm, UNKNOWN
+from arm_exercises import ArmExerciseMonitor, measure_arm, UNKNOWN
 
 
 def test_confidence_just_above_new_gate_is_accepted():

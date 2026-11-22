@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from src.serial_link import feedback_packet, packet
+from serial_link import feedback_packet, packet
 
 
 def test_from_pal_display_modes_and_serial_connection(tmp_path, pytestconfig):
