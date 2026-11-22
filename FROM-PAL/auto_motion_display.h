@@ -28,7 +28,7 @@ struct MotionIssue {
 const MotionIssue MOTION_ISSUES[] = {
     {"OK", "Form looks good"},
     {"TRACK", "Move into view"},
-    {"CAL", "Calibrate first"},
+    {"CAL", "Hold still"},
     {"START", "Go to start position"},
     {"IDLE", "Ready for a rep"},
     {"LEAN", "Stop torso swinging"},

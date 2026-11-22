@@ -150,7 +150,8 @@ class ArmExerciseMonitor:
     """
     def __init__(self, exercise: str = "curl", side: str = "right",
                  calibration_ms: int = 1500, warning_hold_ms: int = 400,
-                 min_rep_ms: int = 400, rep_cooldown_ms: int = 300):
+                 min_rep_ms: int = 400, rep_cooldown_ms: int = 300,
+                 recalibrate_after_ms: int = 5000):
         if exercise not in ("curl", "pushdown"):
             raise ValueError("exercise must be curl or pushdown")
         if side not in JOINTS:
@@ -161,11 +162,14 @@ class ArmExerciseMonitor:
         self.warning_hold_ms = warning_hold_ms
         self.min_rep_ms = min_rep_ms
         self.rep_cooldown_ms = rep_cooldown_ms
+        self.recalibrate_after_ms = recalibrate_after_ms
         self.reset()
 
     def reset(self) -> None:
-        self.calibrating = False
+        """Forget everything. Calibration then starts automatically: whenever the
+        monitor isn't calibrated, every frame is treated as a calibration attempt."""
         self.calibration_error = ""
+        self.calibration_error_until = -1
         self.samples: list[tuple[int, ArmPose]] = []
         self.calibrated = False
         self.base_torso = None
@@ -203,8 +207,17 @@ class ArmExerciseMonitor:
         self.rep_start_ms = None
 
     def start_calibration(self) -> None:
+        """Force a fresh calibration and clear the reps (the C key / button)."""
         self.reset()
-        self.calibrating = True
+
+    def _forget_calibration(self) -> None:
+        """Drop the calibration but keep the rep counts; a new one starts automatically."""
+        self.calibrated = False
+        self.base_torso = None
+        self.base_upper = None
+        self.samples.clear()
+        self.last_calibration_valid_ms = None
+        self.missing_since_ms = None
 
     def _feedback(self, status, message, issue, pose=None, progress=0.0,
                   torso_change=None, upper_change=None, elbow=None):
@@ -248,12 +261,14 @@ class ArmExerciseMonitor:
         self.samples.append((ms, pose))
         elapsed = ms - self.samples[0][0]
         if elapsed < self.calibration_ms or len(self.samples) < 10:
-            return self._feedback(UNKNOWN, f"HOLD STILL {max(0, self.calibration_ms - elapsed) / 1000:.1f}S", "CAL", pose)
+            # Keep a failed attempt's message on screen briefly while retrying.
+            message = (self.calibration_error if ms < self.calibration_error_until else
+                       f"HOLD STILL {max(0, self.calibration_ms - elapsed) / 1000:.1f}S")
+            return self._feedback(UNKNOWN, message, "CAL", pose)
         torsos = [s.torso_deg for _, s in self.samples]
         uppers = [s.upper_arm_deg for _, s in self.samples]
         elbows = [s.elbow_deg for _, s in self.samples]
         self.samples = []
-        self.calibrating = False
         # Ignore the most extreme 10% on each side when measuring stability;
         # a single noisy landmark shouldn't invalidate the calibration.
         def robust_span(values):
@@ -263,7 +278,9 @@ class ArmExerciseMonitor:
         if (robust_span(torsos) > 7 or
                 robust_span(uppers) > 11 or
                 robust_span(elbows) > 14):
-            self.calibration_error = "YOU MOVED: PRESS C TO RETRY"
+            # Not calibrated, so the next frames automatically start a new attempt.
+            self.calibration_error = "YOU MOVED - HOLD STILL TO RETRY"
+            self.calibration_error_until = ms + 1500
             return self._feedback(UNKNOWN, self.calibration_error, "CAL", pose)
         self.base_torso = median(torsos)
         self.base_upper = median(uppers)
@@ -283,11 +300,17 @@ class ArmExerciseMonitor:
         return self._feedback(UNKNOWN, pose.reason, "TRACK", pose)
 
     def evaluate(self, pose: ArmPose, ms: int) -> Feedback:
-        if self.calibrating:
+        if not self.calibrated:
             return self._calibration(pose, ms)
         if not pose.valid:
             if self.missing_since_ms is None:
                 self.missing_since_ms = ms
+            # Out of view for a long time (e.g. walked to the laptop): the
+            # person or camera may have moved, so calibrate again on return.
+            if ms - self.missing_since_ms >= self.recalibrate_after_ms:
+                feedback = self._lose_tracking(pose)
+                self._forget_calibration()
+                return feedback
             # UNKNOWN immediately; don't destroy rep progress for a 1-frame
             # webcam dropout. Extended gaps require returning to START.
             if ms - self.missing_since_ms >= 500:
@@ -297,9 +320,6 @@ class ArmExerciseMonitor:
             if ms - self.missing_since_ms >= 500:
                 self._lose_tracking(pose)
             self.missing_since_ms = None
-        if not self.calibrated:
-            return self._feedback(UNKNOWN, self.calibration_error or "PRESS C TO CALIBRATE", "CAL", pose)
-
         # Three-frame median filters remove a single-frame joint spike while
         # retaining responsiveness at ordinary webcam frame rates.
         for history, value in ((self.angles, pose.elbow_deg),

@@ -209,3 +209,42 @@ def test_unknown_not_false_good_after_occlusion():
         f = m.evaluate(measure_arm(None, 640, 480), t)
         assert f.status == UNKNOWN
     assert m.reps == 0
+
+
+def test_calibrates_automatically_without_pressing_c():
+    m = ArmExerciseMonitor("curl")
+    for t in range(0, 1801, 100):
+        f = m.evaluate(measurement(165), t)
+    assert m.calibrated and f.calibrated
+
+
+def test_failed_calibration_retries_automatically():
+    m = ArmExerciseMonitor("curl")
+    for t in range(0, 1801, 100):
+        m.evaluate(measurement(165 if t % 200 == 0 else 148), t)
+    assert not m.calibrated
+    for t in range(1900, 3701, 100):
+        m.evaluate(measurement(165), t)
+    assert m.calibrated
+
+
+def test_out_of_view_for_5s_recalibrates_but_keeps_reps():
+    m = calibrated("curl")
+    values = [165,145,125,110,95,85,95,115,140,155,165,165]
+    feed(m, values)
+    assert m.reps == 1
+    end = 2100 + len(values) * 130
+    for t in range(end, end + 5001, 250):
+        m.evaluate(measure_arm(None, 640, 480), t)
+    assert not m.calibrated and m.reps == 1
+    back = end + 5200
+    for t in range(back, back + 1801, 100):
+        m.evaluate(measurement(165), t)
+    assert m.calibrated and m.reps == 1
+
+
+def test_short_absence_keeps_calibration():
+    m = calibrated("curl")
+    for t in range(2100, 4100, 250):
+        m.evaluate(measure_arm(None, 640, 480), t)
+    assert m.calibrated

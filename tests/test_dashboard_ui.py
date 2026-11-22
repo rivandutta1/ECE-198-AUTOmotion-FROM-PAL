@@ -32,7 +32,7 @@ def test_mirrored_landmarks_follow_preview():
 
 def test_render_modes_and_mirror():
     frame = np.full((720, 1280, 3), 100, dtype=np.uint8)
-    feedback = Feedback("UNKNOWN", "PRESS C TO CALIBRATE", "CAL", 0, 0, "READY")
+    feedback = Feedback("UNKNOWN", "HOLD STILL 1.2S", "CAL", 0, 0, "READY")
     for mode in EXERCISES:
         for mirrored in (True, False):
             canvas = draw_screen(frame, None, "right", mode, feedback,

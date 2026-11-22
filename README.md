@@ -93,10 +93,14 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
 1. Stand side-on to the camera with your selected shoulder, elbow, wrist, and
    hip visible. Select **Bicep curl** or **Tricep pushdown** and the arm you
    want to track.
-2. Click **Calibrate**. For a curl, let your arm hang straight down. For a
-   pushdown, bend your elbow to the starting position. Hold still until the app
-   says it is ready. Recalibrate after moving the camera or changing exercises
-   or arms.
+2. Calibration is automatic; you don't need to touch the laptop. Get into the
+   starting position (for a curl, let your arm hang straight down; for a
+   pushdown, bend your elbow) and hold still for about 1.5 seconds until the
+   app says it is calibrated. If you move too soon it simply tries again. It
+   also recalibrates on its own after you switch exercise, arm, or camera, and
+   after you've been out of view for 5 seconds (your rep counts are kept).
+   **Calibrate** / `C` forces a fresh calibration and clears the reps, which is
+   useful after moving the camera.
 3. Move through the exercise and return to the starting position under
    control. The panel on the right shows your form, the next step, how far
    through the current rep you are, and the details: completed and flagged
@@ -110,7 +114,7 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
 | --- | --- |
 | `1` / `2` | Select curl / pushdown |
 | `L` / `R` | Select left / right arm |
-| `C` | Calibrate |
+| `C` | Recalibrate now (also clears reps) |
 | `M` | Toggle mirror preview |
 | `Q` / `Esc` | Exit |
 
@@ -176,8 +180,11 @@ to pixels so angles account for the image aspect ratio. The resulting
 `ArmPose` carries the elbow angle, torso tilt, upper-arm tilt, and confidence,
 or a tracking failure with a reason.
 
-**Calibration and scoring.** The monitor gathers at least 1.5 seconds and 10
-stable observations in the exercise's starting posture. Median torso and
+**Calibration and scoring.** Whenever it isn't calibrated, the monitor treats
+every frame as a calibration attempt. It gathers at least 1.5 seconds and 10
+stable observations in the exercise's starting posture, and starts over by
+itself if you moved. Being untracked for 5 seconds drops the calibration (but
+not the rep counts) so it is redone when you come back. Median torso and
 upper-arm angles become the session baseline. Three-frame medians smooth
 movement, and torso or upper-arm deviations must persist for 400 ms before
 they trigger a live warning. Tracking loss returns `UNKNOWN` immediately.
@@ -253,7 +260,7 @@ landmarks and fake hardware.
 | --- | --- |
 | [`test_app_modes.py`](tests/test_app_modes.py) | Only curl and pushdown, on the left or right arm, can be monitored. |
 | [`test_arm_measurement.py`](tests/test_arm_measurement.py) | `measure_arm()`: joint angles from landmarks, confidence and visibility limits, the opposite-hip fallback, and rejection of off-screen, overlapping, or missing joints. |
-| [`test_exercise_monitor.py`](tests/test_exercise_monitor.py) | `ArmExerciseMonitor`: calibration (holding still, correct start pose, short dropouts), good and partial reps for both exercises, torso-lean and upper-arm warnings, rejection of too-fast or double-counted reps, and tracking loss. |
+| [`test_exercise_monitor.py`](tests/test_exercise_monitor.py) | `ArmExerciseMonitor`: automatic calibration (holding still, correct start pose, retrying after movement, short dropouts, recalibrating after 5 s out of view), good and partial reps for both exercises, torso-lean and upper-arm warnings, rejection of too-fast or double-counted reps, and tracking loss. |
 | [`test_dashboard_ui.py`](tests/test_dashboard_ui.py) | `arm_ui.py`: the dashboard renders for every status, exercise, and mirror setting; buttons are large and clickable; the overlay follows mirroring; every measurement is shown and fits in the panel. |
 | [`test_serial_link.py`](tests/test_serial_link.py) | `serial_link.py`: `F` packet format, rejection of invalid values, Arduino port auto-detection, and that connecting doesn't block while the board boots. |
 | [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), plus the UI rate and the downscaling of inference frames. |

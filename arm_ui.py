@@ -179,9 +179,9 @@ def status_text(feedback: Feedback):
         return "Check form"
     if feedback.issue == "TRACK":
         return "Move into view"
-    if feedback.issue == "CAL":
-        return "Calibrate first"
-    if feedback.issue in ("START", "IDLE") and feedback.calibrated:
+    if not feedback.calibrated:
+        return "Calibrating"
+    if feedback.issue in ("START", "IDLE"):
         return "Ready to start"
     return "Waiting"
 
