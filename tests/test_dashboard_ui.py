@@ -100,9 +100,7 @@ def test_unknown_does_not_appear_as_good():
     assert ui.draw_screen(frame, None, "right", "pushdown", msg, False).shape == (900,1600,3)
 
 
-def test_font_search_skips_bold_and_mono_variants():
-    from pathlib import Path
-    assert ui._is_plain(Path("NotoSans-Regular.ttf"))
-    assert ui._is_plain(Path("DejaVuSans.ttf"))
-    assert not ui._is_plain(Path("DejaVuSans-Bold.ttf"))
-    assert not ui._is_plain(Path("DejaVuSansMono.ttf"))
+def test_font_is_an_installed_family_or_the_qt_default():
+    from PySide6.QtGui import QFontDatabase
+    family = ui.font_family()
+    assert family in QFontDatabase.families() or family == ui.QApplication.font().family()

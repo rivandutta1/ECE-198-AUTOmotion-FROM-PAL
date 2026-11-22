@@ -1,9 +1,9 @@
 """AutoMotion: a minimal dark, mouse-first interface for two arm exercises.
 
-Metro Nova is used only if already licensed and installed locally. The app
-never ships or downloads any font files. Pillow renders UI typography because
-cv2.putText cannot render real font families. Camera stays mirrored only for
-preview; anatomical LEFT/RIGHT and measurements use unmirrored landmarks.
+Everything is drawn with Qt's QPainter in a fixed 1600x900 layout; the window
+scales the painter, so shapes and text stay sharp at any size and on high-DPI
+(Retina / 150%) screens. The camera stays mirrored only for the preview;
+anatomical LEFT/RIGHT and measurements use unmirrored landmarks.
 """
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ import os
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QImage, QPainter, QPen
+from PySide6.QtWidgets import QApplication
 
 from arm_exercises import JOINTS, Feedback, _quality
 from app_modes import EXERCISE_NAMES
@@ -80,94 +82,99 @@ def point_in_preview(lm, viewport, mirror: bool):
             int(round(oy + lm.y * height)))
 
 
-def _is_plain(path):
-    """Skip bold/italic/narrow variants so the UI uses a regular weight."""
-    stem = path.stem.lower()
-    return not any(word in stem for word in
-                   ("bold", "italic", "oblique", "condensed", "light", "mono"))
+FONT_FAMILIES = ("Metro Nova", "Avenir Next", "Helvetica Neue", "Noto Sans",
+                 "DejaVu Sans", "Segoe UI", "Arial")
 
 
-def _font_candidates():
-    # Metro Nova is a commercial font. Use an existing system installation only.
-    roots = [Path.home() / "Library/Fonts", Path("/Library/Fonts"),  # macOS
-             Path("/System/Library/Fonts"),
-             Path("/usr/share/fonts/truetype/dejavu"),  # Debian / Ubuntu
-             Path("/usr/share/fonts/dejavu-sans-fonts"),  # Fedora
-             Path("/usr/share/fonts/google-noto")]  # Fedora
-    metro = []
-    fallbacks = []
-    for root in roots:
-        if not root.exists():
-            continue
-        try:
-            fonts = [p for p in root.iterdir() if p.is_file() and
-                     p.suffix.lower() in (".otf", ".ttf", ".ttc")]
-        except (PermissionError, OSError):
-            continue
-        metro.extend(p for p in fonts if "metro" in p.stem.lower() and "nova" in p.stem.lower())
-        fallbacks.extend(p for p in fonts if _is_plain(p) and any(
-            name in p.stem.lower() for name in
-            ("avenir next", "avenirnext", "helveticaneue", "helvetica neue", "dejavusans",
-             "notosans-regular")))
-    return sorted(metro, key=lambda p: "regular" not in p.stem.lower()) + fallbacks
+def qt_app():
+    """The one QApplication (created on first use). Needed for windows and fonts."""
+    app = QApplication.instance()
+    if app is None:
+        # opencv-python sets these to its own bundled Qt 5 files when imported;
+        # PySide6 (Qt 6) must not try to load those.
+        for name in ("QT_QPA_PLATFORM_PLUGIN_PATH", "QT_QPA_FONTDIR"):
+            os.environ.pop(name, None)
+        app = QApplication(["AutoMotion"])
+    return app
 
 
 @lru_cache(maxsize=1)
-def installed_font_path():
+def font_family():
+    """AUTOMOTION_FONT_PATH if set, else the first installed preferred family.
+
+    Metro Nova is a commercial font: it is used only if already installed.
+    The app never ships or downloads font files.
+    """
+    qt_app()
     override = os.environ.get("AUTOMOTION_FONT_PATH")
     if override and Path(override).is_file():
-        return str(Path(override))
-    for path in _font_candidates():
-        try:
-            ImageFont.truetype(str(path), size=16)
-            return str(path)
-        except (OSError, ValueError):
-            continue
-    # Typical Pillow bundled fallback, no extra third-party font assets shipped.
-    return "DejaVuSans.ttf"
+        loaded = QFontDatabase.addApplicationFont(override)
+        families = QFontDatabase.applicationFontFamilies(loaded) if loaded >= 0 else []
+        if families:
+            return families[0]
+    installed = set(QFontDatabase.families())
+    return next((name for name in FONT_FAMILIES if name in installed),
+                QApplication.font().family())
 
 
-@lru_cache(maxsize=36)
+@lru_cache(maxsize=64)
 def _font(px: int):
-    try:
-        return ImageFont.truetype(installed_font_path(), max(10, px))
-    except (OSError, ValueError):
-        return ImageFont.load_default(size=max(10, px))
+    font = QFont(font_family())
+    font.setPixelSize(max(10, px))
+    return font
+
+
+def _text_width(value, size):
+    return QFontMetricsF(_font(_size_to_px(size))).horizontalAdvance(str(value))
 
 
 def _size_to_px(size):
     return int(round(size * 35))
 
 
-def _text(canvas, value, x, y, size=.68, color=TEXT):
-    """Draw text with a real font. y is the baseline, matching old UI tests."""
-    font = _font(_size_to_px(size))
-    ImageDraw.Draw(canvas).text((int(x), int(y)), str(value), font=font,
-                                fill=tuple(color), anchor="ls",
-                                stroke_width=0)
+def _color(rgb):
+    return QColor(*rgb)
+
+
+def _text(painter, value, x, y, size=.68, color=TEXT):
+    """Draw text; y is the baseline."""
+    painter.setFont(_font(_size_to_px(size)))
+    painter.setPen(_color(color))
+    painter.drawText(QPointF(x, y), str(value))
 
 
 def _fit_size(value, max_width, target=.72, minimum=.40):
     size = target
     while size > minimum:
-        if _font(_size_to_px(size)).getlength(str(value)) <= max_width:
+        if _text_width(value, size) <= max_width:
             return size
         size -= .03
     return minimum
 
 
-def _center_text(canvas, value, rect, size=.67, color=TEXT):
+def _center_text(painter, value, rect, size=.67, color=TEXT):
     x1, y1, x2, y2 = rect
     fsize = _fit_size(value, x2 - x1 - 20, size)
-    f = _font(_size_to_px(fsize))
-    tw = f.getlength(str(value))
+    tw = _text_width(value, fsize)
     baseline = (y1 + y2) // 2 + _size_to_px(fsize) * .34
-    _text(canvas, value, x1 + (x2-x1-tw)//2, baseline, fsize, color)
+    _text(painter, value, x1 + (x2-x1-tw)//2, baseline, fsize, color)
 
 
-def _round(canvas, rect, fill, radius=19, outline=None, width=1):
-    ImageDraw.Draw(canvas).rounded_rectangle(rect, radius=radius, fill=fill,
-                                             outline=outline, width=width)
+def _rect(rect):
+    x1, y1, x2, y2 = rect
+    return QRectF(x1, y1, x2 - x1, y2 - y1)
+
+
+def _round(painter, rect, fill, radius=19, outline=None, width=1):
+    painter.setBrush(_color(fill))
+    painter.setPen(QPen(_color(outline), width) if outline else Qt.NoPen)
+    painter.drawRoundedRect(_rect(rect), radius, radius)
+
+
+def _ellipse(painter, rect, fill, outline=None, width=1):
+    painter.setBrush(_color(fill))
+    painter.setPen(QPen(_color(outline), width) if outline else Qt.NoPen)
+    painter.drawEllipse(_rect(rect))
 
 
 def wrapping(text, max_chars=40, limit=3):
@@ -233,8 +240,7 @@ def _draw_details(canvas, feedback, rect):
         right = x1 + (column + 1) * column_width - 16
         baseline = y1 + 28 + row * 25
         _text(canvas, label, left, baseline, .50, MUTED)
-        width = _font(_size_to_px(.56)).getlength(value)
-        _text(canvas, value, right - width, baseline, .56, color)
+        _text(canvas, value, right - _text_width(value, .56), baseline, .56, color)
 
 
 def _draw_progress(canvas, progress, x1, y, x2):
@@ -242,7 +248,7 @@ def _draw_progress(canvas, progress, x1, y, x2):
     progress = max(0.0, min(1.0, progress or 0.0))
     _text(canvas, "REP PROGRESS", x1, y, .50, SOFT)
     label = f"{progress * 100:.0f}%"
-    _text(canvas, label, x2 - _font(_size_to_px(.50)).getlength(label), y, .50, MUTED)
+    _text(canvas, label, x2 - _text_width(label, .50), y, .50, MUTED)
     bar = (x1, y + 10, x2, y + 24)
     _round(canvas, bar, SURFACE_RAISED, 7)
     if progress > 0:
@@ -274,22 +280,21 @@ def _draw_button(canvas, button, selected=False, mirrored=True, connected=False)
     _center_text(canvas, text, button.rect, .63, fg)
 
 
-_LAST_PREVIEW = None  # one cached frame: 60 Hz UI need not rescale 30 FPS video twice
+_LAST_PREVIEW = None  # one cached frame: the 60 Hz UI need not convert 30 FPS video twice
 
 
-def _preview_image(frame, mirrored, width, height):
+def _preview_image(frame, mirrored):
+    """The camera frame as a QImage (mirrored if asked); Qt scales it when drawn."""
     global _LAST_PREVIEW
     if (_LAST_PREVIEW is not None and _LAST_PREVIEW[0] is frame and
-            _LAST_PREVIEW[1] == mirrored and _LAST_PREVIEW[2] == (width, height)):
-        return _LAST_PREVIEW[3]
-    h, w = frame.shape[:2]
-    preview = cv2.flip(frame, 1) if mirrored else frame
-    scaled = cv2.resize(preview, (width, height),
-                        interpolation=cv2.INTER_AREA if (w > width or h > height)
-                        else cv2.INTER_LINEAR)
-    result = Image.fromarray(cv2.cvtColor(scaled, cv2.COLOR_BGR2RGB))
+            _LAST_PREVIEW[1] == mirrored):
+        return _LAST_PREVIEW[2]
+    preview = np.ascontiguousarray(cv2.flip(frame, 1) if mirrored else frame)
+    h, w = preview.shape[:2]
+    # .copy() makes Qt own the pixels, so the NumPy buffer can be freed.
+    result = QImage(preview.data, w, h, preview.strides[0], QImage.Format_BGR888).copy()
     # Retain a strong reference to the original frame to avoid recycled object IDs.
-    _LAST_PREVIEW = (frame, mirrored, (width, height), result)
+    _LAST_PREVIEW = (frame, mirrored, result)
     return result
 
 
@@ -304,30 +309,31 @@ def _draw_pose(canvas, landmarks, side, viewport, mirrored):
         if (.005 <= landmark.x <= .995 and .005 <= landmark.y <= .995 and
                 visible >= .40 and present >= .35):
             points[label] = point_in_preview(landmark, viewport, mirrored)
-    draw = ImageDraw.Draw(canvas)
     for first, second in (("hip", "shoulder"), ("shoulder", "elbow"), ("elbow", "wrist")):
         if first in points and second in points:
-            draw.line((points[first], points[second]), fill=(22, 35, 39), width=10)
-            draw.line((points[first], points[second]), fill=MINT, width=5)
-    for p in points.values():
-        x, y = p
-        draw.ellipse((x-9, y-9, x+9, y+9), fill=MINT, outline=(21, 39, 40), width=3)
+            for color, width in (((22, 35, 39), 10), (MINT, 5)):
+                canvas.setPen(QPen(_color(color), width, Qt.SolidLine, Qt.RoundCap))
+                canvas.drawLine(QPointF(*points[first]), QPointF(*points[second]))
+    for x, y in points.values():
+        _ellipse(canvas, (x-9, y-9, x+9, y+9), MINT, (21, 39, 40), 3)
 
 
-def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
-                arduino_connected: bool, mirrored: bool = True):
-    """BGR NumPy in/out, for OpenCV's macOS HighGUI main thread."""
-    canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
-    draw = ImageDraw.Draw(canvas)
+def paint_dashboard(canvas: QPainter, frame, landmarks, side: str, exercise: str,
+                    feedback: Feedback, arduino_connected: bool, mirrored: bool = True):
+    """Draw the whole dashboard in WIDTH x HEIGHT coordinates.
 
+    `canvas` is a QPainter; the window scales it to its own size.
+    """
+    canvas.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing |
+                          QPainter.SmoothPixmapTransform)
+    canvas.fillRect(QRectF(0, 0, WIDTH, HEIGHT), _color(BG))
     _round(canvas, (25, 26, 66, 67), MINT, radius=13)
-    draw.ellipse((40, 34, 59, 53), fill=LAVENDER)
+    _ellipse(canvas, (40, 34, 59, 53), LAVENDER)
     _text(canvas, "AutoMotion", 85, 63, 1.16, TEXT)
 
     # Tiny device-status chip; technical data stays out of the main UI.
     _round(canvas, (1365, 28, 1572, 75), SURFACE, 18, outline=BORDER)
-    dot = MINT if arduino_connected else SOFT
-    draw.ellipse((1383, 47, 1398, 62), fill=dot)
+    _ellipse(canvas, (1383, 47, 1398, 62), MINT if arduino_connected else SOFT)
     _text(canvas, "Arduino linked" if arduino_connected else "Camera only",
           1409, 60, .56, MUTED)
 
@@ -350,11 +356,10 @@ def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
     zoom = min(max_w/max(1,w), max_h/max(1,h))
     pw, ph = max(1, round(w*zoom)), max(1, round(h*zoom))
     ox, oy = ix1+(max_w-pw)//2, iy1+(max_h-ph)//2
-    canvas.paste(_preview_image(frame, mirrored, pw, ph), (ox, oy))
+    canvas.drawImage(QRectF(ox, oy, pw, ph), _preview_image(frame, mirrored))
     _draw_pose(canvas, landmarks, side, (ox, oy, pw, ph), mirrored)
     _round(canvas, (vx1+28, vy1+24, vx1+195, vy1+65), PANEL_DARK, 14)
-    draw = ImageDraw.Draw(canvas)
-    draw.ellipse((vx1+44, vy1+39, vx1+56, vy1+51), fill=MINT)
+    _ellipse(canvas, (vx1+44, vy1+39, vx1+56, vy1+51), MINT)
     _text(canvas, "LIVE CAMERA", vx1+71, vy1+52, .51, TEXT)
     # A quiet label instead of debug metrics/FPS counters.
     _round(canvas, (vx1+28, vy2-65, vx2-28, vy2-27), PANEL_DARK, 13)
@@ -386,5 +391,19 @@ def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
 
     _text(canvas, "Camera guidance only - Not a medical or safety assessment",
           30, 893, .47, SOFT)
-    # OpenCV expects BGR uint8.
-    return cv2.cvtColor(np.asarray(canvas), cv2.COLOR_RGB2BGR)
+
+
+def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
+                arduino_connected: bool, mirrored: bool = True):
+    """Render the dashboard off-screen at WIDTH x HEIGHT and return it as a
+    BGR NumPy image (used by the tests; the app window paints directly)."""
+    qt_app()
+    image = QImage(WIDTH, HEIGHT, QImage.Format_RGB888)
+    painter = QPainter(image)
+    try:
+        paint_dashboard(painter, frame, landmarks, side, exercise, feedback,
+                        arduino_connected, mirrored)
+    finally:
+        painter.end()
+    rows = np.frombuffer(image.constBits(), np.uint8).reshape(HEIGHT, image.bytesPerLine())
+    return rows[:, :WIDTH * 3].reshape(HEIGHT, WIDTH, 3)[..., ::-1].copy()

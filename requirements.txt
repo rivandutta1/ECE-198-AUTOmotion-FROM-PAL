@@ -7,4 +7,4 @@ opencv-contrib-python>=4.8,<5
 numpy  # imported directly by main.py and arm_ui.py
 pyserial>=3.5,<4
 pytest>=8,<10
-Pillow>=10,<13  # UI fonts; Metro Nova itself is NOT bundled
+PySide6-Essentials>=6.6,<7  # app window and drawing; sharp on high-DPI screens

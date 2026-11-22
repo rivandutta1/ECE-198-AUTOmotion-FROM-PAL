@@ -139,7 +139,7 @@ the Full model separately and save it as `models/pose_landmarker_full.task`.
 | Missing model error | Check the filename and put the `.task` file in `models/`, beside the root `main.py`. |
 | A camera cannot open or stops delivering frames | Close other apps using it, check permissions, then relaunch with another `--camera` index. |
 | No matching MediaPipe distribution | Check that the environment uses Python 3.11 for your OS and CPU and update pip before retrying. |
-| HighGUI window errors | Run in a graphical desktop session with `opencv-contrib-python` from `requirements.txt`. Headless OpenCV wheels omit the window backend. |
+| Window doesn't open (Qt "could not load the platform plugin") | Run in a graphical desktop session. On Linux under X11, Qt 6 also needs `xcb-util-cursor` (Fedora) / `libxcb-cursor0` (Ubuntu). |
 | Stuck on calibration or moving into view | Check the selected arm, side-on framing, lighting, and the starting elbow position. Use `--debug-tracking` to see the current reason. |
 | `Camera only` with optional USB hardware attached | Check the terminal for the connection error. Run `-m serial.tools.list_ports -v` with the environment's Python, then use `--port` if auto-detection is ambiguous. Close any serial monitor before reconnecting. |
 
@@ -204,14 +204,16 @@ and `UNKNOWN` covers missing input, calibration, and waiting. These are
 experimental 2D heuristics. Camera placement, occlusion, and movement affect
 their accuracy.
 
-**Rendering and controls.** The main thread alone runs the OpenCV window,
-keyboard handling, and mouse hit tests. It renders the most recent `Snapshot`
-even when the camera or inference is slower than the UI. A short lock protects
-the snapshot reference and a queue carries commands back to the worker.
-[`arm_ui.py`](arm_ui.py) builds the dark dashboard with Pillow,
-NumPy, and OpenCV, placing the selected arm overlay in the fitted video
-viewport. Fonts resolve through `AUTOMOTION_FONT_PATH`, supported local fonts
-(Noto Sans or DejaVu Sans on Linux), and Pillow fallbacks. Metro Nova is optional and is not bundled.
+**Rendering and controls.** The window is a Qt (PySide6) widget,
+`DashboardWindow` in `main.py`, on the main thread. A timer repaints it at
+`--ui-hz` with the most recent `Snapshot`, even when the camera or inference
+is slower. Clicks and keys become actions on a queue back to the worker; a
+short lock protects the snapshot reference. [`arm_ui.py`](arm_ui.py) draws
+the dashboard with Qt's `QPainter` in a fixed 1600×900 layout that the window
+scales to its size, so text stays sharp at any window size and on high-DPI
+(Retina / 150%) screens. Fonts: `AUTOMOTION_FONT_PATH` if set, else the first
+installed of Metro Nova, Avenir Next, Helvetica Neue, Noto Sans, DejaVu Sans,
+Segoe UI, Arial. Metro Nova is optional and is not bundled.
 
 **Optional output.** [`serial_link.py`](serial_link.py) opens
 one recognized USB port or honors an explicit override. It sends newline-ended
@@ -242,9 +244,9 @@ separate from the desktop app setup.
 | [`legacy/`](legacy) | Archived, unused code: the first camera demo with its shoulder/chest press rules and tests, and two earlier standalone OLED sketches. See [`legacy/README.md`](legacy/README.md). |
 | [`requirements.txt`](requirements.txt), [`pytest.ini`](pytest.ini), [`tests/`](tests) | Python dependencies, test settings, and the automated tests for the app and the FROM-PAL protocol. |
 
-OpenCV supplies camera I/O and HighGUI windows. MediaPipe supplies the pose
-landmarks. NumPy holds the image arrays. Pillow renders the dashboard and
-text, pySerial handles optional USB output, and pytest runs the tests.
+OpenCV supplies camera capture. MediaPipe supplies the pose landmarks. NumPy
+holds the image arrays. PySide6 (Qt) provides the window and draws the
+dashboard, pySerial handles optional USB output, and pytest runs the tests.
 The `models/` and `.venv/` directories are local setup outputs.
 
 ## Run tests
@@ -253,8 +255,9 @@ From the repository root, run `.venv/bin/python -m pytest -q` on macOS or
 Fedora, or `.\.venv\Scripts\python.exe -m pytest -q` in PowerShell.
 `pytest.ini` makes the root modules importable and runs only `tests/`.
 
-No webcam, MediaPipe model, or Arduino is needed: the tests use synthetic
-landmarks and fake hardware.
+No webcam, MediaPipe model, Arduino, or screen is needed: the tests use
+synthetic landmarks, fake hardware, and Qt's off-screen mode
+([`conftest.py`](tests/conftest.py)).
 
 | Test file | What it checks |
 | --- | --- |
@@ -263,7 +266,7 @@ landmarks and fake hardware.
 | [`test_exercise_monitor.py`](tests/test_exercise_monitor.py) | `ArmExerciseMonitor`: automatic calibration (holding still, correct start pose, retrying after movement, short dropouts, recalibrating after 5 s out of view), good and partial reps for both exercises, torso-lean and upper-arm warnings, rejection of too-fast or double-counted reps, and tracking loss. |
 | [`test_dashboard_ui.py`](tests/test_dashboard_ui.py) | `arm_ui.py`: the dashboard renders for every status, exercise, and mirror setting; buttons are large and clickable; the overlay follows mirroring; every measurement is shown and fits in the panel. |
 | [`test_serial_link.py`](tests/test_serial_link.py) | `serial_link.py`: `F` packet format, rejection of invalid values, Arduino port auto-detection, and that connecting doesn't block while the board boots. |
-| [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), plus the UI rate and the downscaling of inference frames. |
+| [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), the Qt window turning clicks and keys into actions (run off-screen, no window appears), the starting window size, the UI rate, and the downscaling of inference frames. |
 | [`test_from_pal_protocol.py`](tests/test_from_pal_protocol.py) | Compiles the real `FROM-PAL` sketch for your computer with simulated Arduino hardware and feeds it packets made by `serial_link.py`: mode button, Desktop screen, timeouts, and malformed lines. Skipped if no `c++` compiler is installed. |
 | [`landmark_helpers.py`](tests/landmark_helpers.py) | Not a test: builds the synthetic arm poses used by the measurement and monitor tests. |
 

@@ -1,9 +1,10 @@
 #! .venv/bin/python
 
-"""AutoMotion: independent 60 Hz UI and asynchronous camera/pose/Arduino work.
+"""AutoMotion: a 60 Hz Qt window plus a background camera/pose/Arduino thread.
 
-OpenCV HighGUI's rendering cadence is a *target*, not a screen vsync guarantee.
-Camera and inference can run at 24-30 FPS without freezing interactive controls.
+The window (DashboardWindow) only draws the latest Snapshot and turns clicks
+and keys into actions; camera and inference can run at 24-30 FPS without
+freezing interactive controls.
 """
 from __future__ import annotations
 
@@ -16,12 +17,15 @@ import time
 
 import cv2
 import numpy as np
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
+from PySide6.QtWidgets import QWidget
 
 ROOT = Path(__file__).resolve().parent
 
 from app_modes import EXERCISES, SIDES, create_monitor, evaluate_monitor
 from arm_exercises import Feedback
-from arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
+from arm_ui import BG, WINDOW_TITLE, WIDTH, HEIGHT, hit_test, paint_dashboard, qt_app
 from serial_link import SerialLink, find_arduino_port
 
 TARGET_UI_HZ = 60.0
@@ -257,14 +261,79 @@ class CameraWorker:
                 self.cap.release()
 
 
-KEY_SHORTCUTS = {
-    ord("1"): "mode:curl", ord("2"): "mode:pushdown",
-    ord("l"): "side:left", ord("L"): "side:left",
-    ord("r"): "side:right", ord("R"): "side:right",
-    ord("c"): "calibrate", ord("C"): "calibrate",
-    ord("m"): "mirror", ord("M"): "mirror",
-    ord("q"): "quit", ord("Q"): "quit", 27: "quit",  # 27 = Esc
+KEY_SHORTCUTS = {  # typed character (lower case) -> action
+    "1": "mode:curl", "2": "mode:pushdown",
+    "l": "side:left", "r": "side:right",
+    "c": "calibrate", "m": "mirror", "q": "quit",
 }
+
+
+class DashboardWindow(QWidget):
+    """The app window: paints the worker's latest Snapshot ui_hz times a second
+    and turns clicks and key presses into actions.
+
+    The dashboard is laid out in WIDTH x HEIGHT units; the painter is scaled to
+    the window (keeping its shape), so Qt draws it sharp at any size and on
+    high-DPI screens.
+    """
+    def __init__(self, worker, ui_hz: float = TARGET_UI_HZ):
+        super().__init__()
+        self.worker = worker
+        self.mirrored = True
+        self.setWindowTitle(WINDOW_TITLE)
+        self.setMinimumSize(WIDTH // 3, HEIGHT // 3)
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
+        self._timer.timeout.connect(self.update)  # update() schedules a repaint
+        self._timer.start(max(1, round(1000 / ui_hz)))
+
+    def _placement(self):
+        """(scale, x offset, y offset) that fits the dashboard in the window."""
+        scale = min(self.width() / WIDTH, self.height() / HEIGHT)
+        return (scale, (self.width() - WIDTH * scale) / 2,
+                (self.height() - HEIGHT * scale) / 2)
+
+    def paintEvent(self, event):
+        snap = self.worker.snapshot()
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), QColor(*BG))  # bars around the dashboard
+            scale, dx, dy = self._placement()
+            painter.translate(dx, dy)
+            painter.scale(scale, scale)
+            paint_dashboard(painter, snap.frame, snap.landmarks, snap.side, snap.exercise,
+                            snap.feedback, snap.arduino_connected, mirrored=self.mirrored)
+        finally:
+            painter.end()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        scale, dx, dy = self._placement()
+        position = event.position()
+        action = hit_test(int((position.x() - dx) / scale), int((position.y() - dy) / scale))
+        if action:
+            self.handle(action)
+
+    def keyPressEvent(self, event):
+        action = "quit" if event.key() == Qt.Key_Escape else KEY_SHORTCUTS.get(event.text().lower())
+        if action:
+            self.handle(action)
+
+    def handle(self, action: str):
+        if action == "quit":
+            self.close()
+        elif action == "mirror":
+            self.mirrored = not self.mirrored
+            self.update()
+        else:
+            self.worker.send(action)
+
+
+def initial_window_size(screen_width: int, screen_height: int):
+    """1600x900, shrunk (keeping its shape) to fit 90% of the screen."""
+    scale = min(1.0, .9 * screen_width / WIDTH, .9 * screen_height / HEIGHT)
+    return round(WIDTH * scale), round(HEIGHT * scale)
 
 
 def parse_args(argv=None):
@@ -295,60 +364,17 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     cv2.setUseOptimized(True)
+    app = qt_app()
     worker = CameraWorker(args)
-    mirrored = True
-    pending_clicks = []
-    window_created = False
+    window = DashboardWindow(worker, args.ui_hz)
+    screen = app.primaryScreen().availableGeometry()
+    window.resize(*initial_window_size(screen.width(), screen.height()))
+    worker.start()
+    window.show()
     try:
-        def clicked(event, x, y, flags, user_data):
-            if event == cv2.EVENT_LBUTTONUP:
-                action = hit_test(x, y)
-                if action:
-                    pending_clicks.append(action)
-
-        # All HighGUI calls stay on the main thread, which matters on macOS.
-        cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WINDOW_TITLE, WIDTH, HEIGHT)
-        cv2.setMouseCallback(WINDOW_TITLE, clicked)
-        window_created = True
-        worker.start()
-        frame_interval = 1.0 / args.ui_hz
-        next_frame_at = time.perf_counter()
-        running = True
-        while running:
-            snap = worker.snapshot()
-            canvas = draw_screen(snap.frame, snap.landmarks, snap.side, snap.exercise,
-                                 snap.feedback, snap.arduino_connected, mirrored=mirrored)
-            cv2.imshow(WINDOW_TITLE, canvas)
-            key = cv2.waitKey(1) & 0xFF
-            try:
-                if cv2.getWindowProperty(WINDOW_TITLE, cv2.WND_PROP_VISIBLE) < 1:
-                    break
-            except cv2.error:
-                break
-            actions = pending_clicks[:]
-            pending_clicks.clear()
-            if key in KEY_SHORTCUTS:
-                actions.append(KEY_SHORTCUTS[key])
-            for action in actions:
-                if action == "quit":
-                    running = False
-                elif action == "mirror":
-                    mirrored = not mirrored
-                else:
-                    worker.send(action)
-
-            # Sleep until the next UI frame; if far behind, don't try to catch up.
-            next_frame_at += frame_interval
-            remaining = next_frame_at - time.perf_counter()
-            if remaining > 0:
-                time.sleep(remaining)
-            elif remaining < -frame_interval:
-                next_frame_at = time.perf_counter()
+        app.exec()  # returns when the window is closed (Exit, Q, Esc or the title bar)
     finally:
         worker.stop()
-        if window_created:
-            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

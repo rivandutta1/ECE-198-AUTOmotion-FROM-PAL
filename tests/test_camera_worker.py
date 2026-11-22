@@ -109,3 +109,42 @@ def test_worker_background_operations_without_real_webcam(monkeypatch, camera_on
     finally:
         worker.stop()
     assert closed.is_set()
+
+
+class FakeWorker:
+    def __init__(self):
+        self.sent = []
+        self._snapshot = CameraWorker(SimpleNamespace(exercise="curl", side="right")).snapshot()
+    def snapshot(self):
+        return self._snapshot
+    def send(self, action):
+        self.sent.append(action)
+
+
+def test_window_turns_clicks_and_keys_into_actions():
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from arm_ui import controls
+    app = main.qt_app()
+    worker = FakeWorker()
+    window = main.DashboardWindow(worker)
+    window.resize(WIDTH // 2, HEIGHT // 2 + 100)  # letterboxed: 50 px bars top and bottom
+    window.show()
+    calibrate = next(b for b in controls() if b.action == "calibrate")
+    x1, y1, x2, y2 = calibrate.rect
+    QTest.mouseClick(window, Qt.LeftButton, pos=QPoint((x1 + x2) // 4, (y1 + y2) // 4 + 50))
+    QTest.keyClick(window, Qt.Key_2)
+    QTest.keyClick(window, Qt.Key_L)
+    assert worker.sent == ["calibrate", "mode:pushdown", "side:left"]
+    QTest.keyClick(window, Qt.Key_M)
+    assert window.mirrored is False and len(worker.sent) == 3
+    assert not window.grab().isNull()  # paints without errors
+    QTest.keyClick(window, Qt.Key_Escape)
+    app.processEvents()
+    assert not window.isVisible()
+
+
+def test_initial_window_fits_the_screen():
+    assert main.initial_window_size(2560, 1440) == (WIDTH, HEIGHT)
+    width, height = main.initial_window_size(1504, 1003)
+    assert width <= round(1504 * .9) and abs(width / height - WIDTH / HEIGHT) < .01
