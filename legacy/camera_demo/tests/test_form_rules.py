@@ -52,3 +52,22 @@ def test_moving_during_calibration_rejected():
         decision = m.evaluate(sample(0.0 if t % 200 == 0 else 12.0), t)
     assert m.baseline_deg is None
     assert decision.status == UNKNOWN
+
+
+def test_bad_then_invalid_then_recovered():
+    m = calibrated()
+
+    # Hold excessive lean long enough to trigger BAD.
+    for t in range(2300, 3101, 100):
+        decision = m.evaluate(sample(22.0, True), t)
+
+    assert decision.status == BAD
+
+    # Lose tracking for an extended period.
+    for t in range(3200, 5201, 100):
+        decision = m.evaluate(sample(valid=False), t)
+        assert decision.status == UNKNOWN
+
+    # Tracking returns with normal posture.
+    decision = m.evaluate(sample(0.3, True), 5300)
+    assert decision.status == GOOD

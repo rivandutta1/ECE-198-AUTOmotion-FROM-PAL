@@ -7,6 +7,7 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool oledReady = false;
 
 // I2C with ultrasonic sensor
 const int TRIG_PIN = 5;
@@ -24,7 +25,8 @@ struct Button {
 
 Button button = {2, false, false, 0};   // Mode switch
 
-bool isChestPress = true;
+enum DisplayMode { SHOULDER_MODE, CHEST_MODE, DESKTOP_MODE };
+DisplayMode displayMode = CHEST_MODE;
 
 int maxChestROM = 0;
 int maxShoulderROM = 0;
@@ -75,31 +77,47 @@ void setup() {
     startingDistance = getDistance();
     resetTracking();
 
-    // OLED display setup
-    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-
-    // Initial screen display
+    Wire.begin();
+    for (uint8_t address = 0x3C; address <= 0x3D; address++) {
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() == 0) {
+            oledReady = display.begin(SSD1306_SWITCHCAPVCC, address, true, false);
+            break;
+        }
+    }
+    if (!oledReady) Serial.println("OLED unavailable: check SSD1306 wiring and I2C address");
     updateDisplay();
 }
 
 void loop() {
-    // Form status from Python; only shown in shoulder mode
-    if (motionUpdate() && !isChestPress) updateDisplay();
+    const bool wasConnected = motionConnected;
+    const bool feedbackChanged = motionUpdate();
+    const DisplayMode previousMode = displayMode;
 
-    // Button 1: switch mode, once per press
     if (wasPressed(button)) {
-        isChestPress = !isChestPress;
-        startingDistance = getDistance();
-        resetTracking();
+        switch (displayMode) {
+            case SHOULDER_MODE: displayMode = CHEST_MODE; break;
+            case CHEST_MODE: displayMode = DESKTOP_MODE; break;
+            case DESKTOP_MODE: displayMode = SHOULDER_MODE; break;
+        }
         Serial.println("Switched modes");
+    } else if (!wasConnected && motionConnected) {
+        // Auto-select Desktop once per connection. The button can leave it
+        // while packets continue to arrive.
+        displayMode = DESKTOP_MODE;
+    }
+
+    if (displayMode != previousMode) {
+        if (displayMode != DESKTOP_MODE) {
+            startingDistance = getDistance();
+            resetTracking();
+        }
+        updateDisplay();
+    } else if (displayMode == DESKTOP_MODE && feedbackChanged) {
         updateDisplay();
     }
 
-    // Automatic rep detection
-    if (millis() - lastSampleMs >= SAMPLE_INTERVAL_MS) {
+    if (displayMode != DESKTOP_MODE && millis() - lastSampleMs >= SAMPLE_INTERVAL_MS) {
         lastSampleMs = millis();
         trackDistance();
     }
@@ -119,6 +137,7 @@ void registerRep(int currentDistance) {
     int difference = abs(startingDistance - currentDistance);
     startingDistance = currentDistance;
 
+    const bool isChestPress = displayMode == CHEST_MODE;
     if (isChestPress) repCountChest++;
     else repCountShoulder++;
 
@@ -181,25 +200,30 @@ void trackDistance() {
 }
 
 void updateDisplay() {
+    if (!oledReady) return;
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
+    if (displayMode == DESKTOP_MODE) {
+        drawDesktopFeedback();
+        display.display();
+        return;
+    }
+
     // Line 1: Chest
     display.setCursor(0, 10);
-    display.print("Chest: ");
+    display.print(displayMode == CHEST_MODE ? ">Chest: " : " Chest: ");
     display.print(maxChestROM);
     display.print("cm; ");
     display.print(repCountChest / 2);
 
     // Line 2: Shoulder
     display.setCursor(0, 30);
-    display.print("Shoulder: ");
+    display.print(displayMode == SHOULDER_MODE ? ">Shoulder: " : " Shoulder: ");
     display.print(maxShoulderROM);
     display.print("cm; ");
     display.print(repCountShoulder / 2);
-
-    if (!isChestPress) drawMotionStatus();
 
     display.display();
 }
