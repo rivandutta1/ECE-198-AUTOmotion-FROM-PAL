@@ -39,6 +39,7 @@ WHITE = (255, 255, 255)
 
 VIDEO_RECT = (28, 194, 1096, 780)
 STATUS_RECT = (1114, 194, 1572, 780)
+DETAILS_RECT = (1138, 578, 1548, 690)  # measurement grid inside STATUS_RECT
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def controls():
         Button("mode:pushdown", "Tricep pushdown", (347, 106, 672, 170)),
         Button("side:right", "Right arm", (1108, 106, 1328, 170)),
         Button("side:left", "Left arm", (1340, 106, 1572, 170)),
-        Button("calibrate", "Calibrate", (1141, 686, 1545, 755)),
+        Button("calibrate", "Calibrate", (1141, 706, 1545, 766)),
         Button("reset", "Reset reps", (28, 808, 225, 873)),
         Button("mirror", "Mirror on", (238, 808, 431, 873)),
         Button("camera", "Camera", (444, 808, 639, 873)),
@@ -185,6 +186,59 @@ def status_text(feedback: Feedback):
     return "Waiting"
 
 
+def _degrees(value):
+    return "-" if value is None else f"{value:.0f}\u00b0"
+
+
+def _percent(value):
+    return "-" if value is None else f"{value * 100:.0f}%"
+
+
+def detail_rows(feedback: Feedback):
+    """(label, value, color) for every measurement in the details grid.
+
+    Listed column by column: the left column first, then the right one.
+    """
+    flagged_color = ROSE if feedback.bad_reps else TEXT
+    return (
+        ("Completed reps", str(feedback.reps), MINT),
+        ("Flagged reps", str(feedback.bad_reps), flagged_color),
+        ("Stage", feedback.stage.capitalize(), TEXT),
+        ("Confidence", _percent(feedback.confidence), TEXT),
+        ("Elbow angle", _degrees(feedback.elbow_deg), TEXT),
+        ("Torso shift", _degrees(feedback.torso_change_deg), TEXT),
+        ("Upper-arm shift", _degrees(feedback.upper_arm_change_deg), TEXT),
+    )
+
+
+def _draw_details(canvas, feedback, rect):
+    """Two-column label/value grid, four rows per column."""
+    x1, y1, x2, y2 = rect
+    _round(canvas, rect, SURFACE_RAISED, 15)
+    column_width = (x2 - x1) // 2
+    for index, (label, value, color) in enumerate(detail_rows(feedback)):
+        column, row = divmod(index, 4)
+        left = x1 + 16 + column * column_width
+        right = x1 + (column + 1) * column_width - 16
+        baseline = y1 + 28 + row * 25
+        _text(canvas, label, left, baseline, .50, MUTED)
+        width = _font(_size_to_px(.56)).getlength(value)
+        _text(canvas, value, right - width, baseline, .56, color)
+
+
+def _draw_progress(canvas, progress, x1, y, x2):
+    """'Rep progress' label with a horizontal bar underneath."""
+    progress = max(0.0, min(1.0, progress or 0.0))
+    _text(canvas, "REP PROGRESS", x1, y, .50, SOFT)
+    label = f"{progress * 100:.0f}%"
+    _text(canvas, label, x2 - _font(_size_to_px(.50)).getlength(label), y, .50, MUTED)
+    bar = (x1, y + 10, x2, y + 24)
+    _round(canvas, bar, SURFACE_RAISED, 7)
+    if progress > 0:
+        _round(canvas, (x1, bar[1], x1 + max(14, round((x2 - x1) * progress)), bar[3]),
+               MINT, 7)
+
+
 def _status_colors(feedback):
     return {
         "GOOD": (MINT, (34, 58, 51)),
@@ -296,28 +350,27 @@ def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
     _text(canvas, f"Keep your {side} shoulder, elbow, wrist and hip in view",
           vx1+43, vy2-40, .54, MUTED)
 
-    # Simple status panel.
+    # Status panel: form status, next step, rep progress, details, Calibrate.
     _round(canvas, STATUS_RECT, SURFACE, 23, outline=BORDER)
     sx1, sy1, sx2, sy2 = STATUS_RECT
     _text(canvas, EXERCISE_NAMES[exercise], sx1+27, sy1+49,
           _fit_size(EXERCISE_NAMES[exercise], sx2-sx1-58, .89), TEXT)
-    _text(canvas, "Your form", sx1+27, sy1+101, .56, MUTED)
+    _text(canvas, "Your form", sx1+27, sy1+90, .56, MUTED)
 
     tint, fg = _status_colors(feedback)
-    _round(canvas, (sx1+24, sy1+121, sx2-24, sy1+248), tint, 22)
-    _text(canvas, status_text(feedback), sx1+44, sy1+184,
+    _round(canvas, (sx1+24, sy1+104, sx2-24, sy1+204), tint, 22)
+    _text(canvas, status_text(feedback), sx1+44, sy1+156,
           _fit_size(status_text(feedback), sx2-sx1-88, 1.08), fg)
-    _text(canvas, feedback.status, sx1+44, sy1+220, .52, fg)
+    _text(canvas, feedback.status, sx1+44, sy1+187, .52, fg)
 
-    _text(canvas, "NEXT STEP", sx1+27, sy1+290, .50, SOFT)
+    _text(canvas, "NEXT STEP", sx1+27, sy1+238, .50, SOFT)
     instructions = feedback.message or "Choose an exercise and calibrate."
     for line_index, line in enumerate(wrapping(instructions, 38, 3)):
-        _text(canvas, line, sx1+27, sy1+327+line_index*29,
+        _text(canvas, line, sx1+27, sy1+268+line_index*26,
               _fit_size(line, sx2-sx1-54, .64), TEXT)
 
-    _round(canvas, (sx1+24, sy1+421, sx2-24, sy1+473), SURFACE_RAISED, 15)
-    _text(canvas, "Completed reps", sx1+40, sy1+457, .64, MUTED)
-    _text(canvas, str(feedback.reps), sx2-88, sy1+461, 1.03, MINT)
+    _draw_progress(canvas, feedback.progress, sx1+27, sy1+346, sx2-27)
+    _draw_details(canvas, feedback, DETAILS_RECT)
     _draw_button(canvas, next(b for b in controls() if b.action=="calibrate"))
 
     _text(canvas, "Camera guidance only  •  Not a medical or safety assessment",

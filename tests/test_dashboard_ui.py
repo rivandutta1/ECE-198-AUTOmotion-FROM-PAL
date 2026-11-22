@@ -57,7 +57,7 @@ def test_live_dashboard_good_and_bad():
         assert draw_screen(frame, None, "right", "curl", feedback, True).shape == (900,1600,3)
 
 
-def test_no_debug_metrics_on_dark_ui(monkeypatch):
+def test_dashboard_shows_every_feedback_detail(monkeypatch):
     labels = []
     original = ui._text
     def spy(image, value, *args, **kwargs):
@@ -65,15 +65,32 @@ def test_no_debug_metrics_on_dark_ui(monkeypatch):
         return original(image, value, *args, **kwargs)
     monkeypatch.setattr(ui, "_text", spy)
     frame = np.zeros((720, 1280, 3), np.uint8)
-    msg = Feedback("GOOD", "Keep moving steadily", "OK", 3, 0, "CURLING",
+    msg = Feedback("GOOD", "Keep moving steadily", "OK", 3, 1, "CURLING",
                    85, 5, 2, .5, .9, True)
     canvas = ui.draw_screen(frame, None, "right", "curl", msg, True)
     assert canvas.shape == (ui.HEIGHT, ui.WIDTH, 3)
     texts = " | ".join(labels).upper()
     assert "GOOD FORM" in texts and "COMPLETED REPS" in texts
-    assert "ELBOW ANGLE" not in texts and "TORSO SHIFT" not in texts
-    assert "FPS" not in texts and "STAGE:" not in texts
+    for label in ("FLAGGED REPS", "STAGE", "CONFIDENCE", "ELBOW ANGLE",
+                  "TORSO SHIFT", "UPPER-ARM SHIFT", "REP PROGRESS"):
+        assert label in texts
+    for value in ("CURLING", "90%", "85\u00b0", "5\u00b0", "2\u00b0", "50%"):
+        assert value in texts
+    assert "FPS" not in texts
     assert "SHOULDER PRESS" not in texts and "CHEST PRESS" not in texts
+
+
+def test_missing_measurements_show_a_dash():
+    rows = dict((label, value) for label, value, _ in
+                ui.detail_rows(Feedback("UNKNOWN", "Show your arm", "TRACK", 0, 0, "READY")))
+    assert rows["Elbow angle"] == rows["Confidence"] == rows["Torso shift"] == "-"
+    assert rows["Stage"] == "Ready" and rows["Completed reps"] == "0"
+
+
+def test_details_fit_between_progress_bar_and_calibrate_button():
+    calibrate = next(b for b in controls() if b.action == "calibrate")
+    assert ui.DETAILS_RECT[3] < calibrate.rect[1]
+    assert calibrate.rect[3] < ui.STATUS_RECT[3]
 
 
 def test_unknown_does_not_appear_as_good():
