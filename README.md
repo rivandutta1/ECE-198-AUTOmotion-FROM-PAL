@@ -18,8 +18,8 @@ environment on each computer and run all commands from the repository root.
 Install Git if you need to clone the project. The app is on the `main` branch.
 
 ```sh
-git clone --branch main https://github.com/rivandutta1/auto-motion-tuesday.git
-cd auto-motion-tuesday
+git clone --branch main https://github.com/rivandutta1/ECE-198-AUTOmotion-FROM-PAL.git
+cd ECE-198-AUTOmotion-FROM-PAL
 ```
 
 **Already have the checkout?** Open a terminal in that folder and skip the
