@@ -267,6 +267,35 @@ KEY_SHORTCUTS = {
 }
 
 
+def fit_to_window(canvas, window_rect):
+    """Scale the dashboard to the size the window actually shows it at.
+
+    OpenCV's window shrinks or stretches an image with rough sampling, which
+    makes text jagged whenever the window isn't exactly WIDTH x HEIGHT (e.g. on
+    a scaled laptop screen). Resizing it ourselves with a smooth filter keeps
+    the text clean. Returns the image and the factor that turns a click on it
+    back into dashboard coordinates.
+    """
+    _, _, w, h = window_rect
+    if w <= 0 or h <= 0:
+        return canvas, 1.0
+    # Keep the dashboard's shape so the window's own fitting can't drift.
+    scale = min(w / WIDTH, h / HEIGHT)
+    size = (max(1, round(WIDTH * scale)), max(1, round(HEIGHT * scale)))
+    if size == (WIDTH, HEIGHT):
+        return canvas, 1.0
+    smooth = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    return cv2.resize(canvas, size, interpolation=smooth), WIDTH / size[0]
+
+
+def window_image_rect():
+    """(x, y, width, height) of the image area inside the window, or zeros."""
+    try:
+        return cv2.getWindowImageRect(WINDOW_TITLE)
+    except cv2.error:
+        return (0, 0, 0, 0)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="AutoMotion fitness feedback")
     parser.add_argument("--exercise", choices=EXERCISES, default="curl")
@@ -298,11 +327,12 @@ def main(argv=None):
     worker = CameraWorker(args)
     mirrored = True
     pending_clicks = []
+    click_scale = 1.0  # window pixels -> dashboard pixels (see fit_to_window)
     window_created = False
     try:
         def clicked(event, x, y, flags, user_data):
             if event == cv2.EVENT_LBUTTONUP:
-                action = hit_test(x, y)
+                action = hit_test(round(x * click_scale), round(y * click_scale))
                 if action:
                     pending_clicks.append(action)
 
@@ -319,6 +349,7 @@ def main(argv=None):
             snap = worker.snapshot()
             canvas = draw_screen(snap.frame, snap.landmarks, snap.side, snap.exercise,
                                  snap.feedback, snap.arduino_connected, mirrored=mirrored)
+            canvas, click_scale = fit_to_window(canvas, window_image_rect())
             cv2.imshow(WINDOW_TITLE, canvas)
             key = cv2.waitKey(1) & 0xFF
             try:

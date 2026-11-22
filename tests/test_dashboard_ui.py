@@ -98,3 +98,11 @@ def test_unknown_does_not_appear_as_good():
     msg = Feedback("UNKNOWN", "Show your arm", "TRACK", 0, 0, "READY")
     assert ui.status_text(msg) == "Move into view"
     assert ui.draw_screen(frame, None, "right", "pushdown", msg, False).shape == (900,1600,3)
+
+
+def test_font_search_skips_bold_and_mono_variants():
+    from pathlib import Path
+    assert ui._is_plain(Path("NotoSans-Regular.ttf"))
+    assert ui._is_plain(Path("DejaVuSans.ttf"))
+    assert not ui._is_plain(Path("DejaVuSans-Bold.ttf"))
+    assert not ui._is_plain(Path("DejaVuSansMono.ttf"))

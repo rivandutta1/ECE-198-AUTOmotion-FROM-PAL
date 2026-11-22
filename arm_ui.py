@@ -80,10 +80,20 @@ def point_in_preview(lm, viewport, mirror: bool):
             int(round(oy + lm.y * height)))
 
 
+def _is_plain(path):
+    """Skip bold/italic/narrow variants so the UI uses a regular weight."""
+    stem = path.stem.lower()
+    return not any(word in stem for word in
+                   ("bold", "italic", "oblique", "condensed", "light", "mono"))
+
+
 def _font_candidates():
     # Metro Nova is a commercial font. Use an existing system installation only.
-    roots = [Path.home() / "Library/Fonts", Path("/Library/Fonts"),
-             Path("/System/Library/Fonts"), Path("/usr/share/fonts/truetype/dejavu")]
+    roots = [Path.home() / "Library/Fonts", Path("/Library/Fonts"),  # macOS
+             Path("/System/Library/Fonts"),
+             Path("/usr/share/fonts/truetype/dejavu"),  # Debian / Ubuntu
+             Path("/usr/share/fonts/dejavu-sans-fonts"),  # Fedora
+             Path("/usr/share/fonts/google-noto")]  # Fedora
     metro = []
     fallbacks = []
     for root in roots:
@@ -95,9 +105,10 @@ def _font_candidates():
         except (PermissionError, OSError):
             continue
         metro.extend(p for p in fonts if "metro" in p.stem.lower() and "nova" in p.stem.lower())
-        fallbacks.extend(p for p in fonts if any(
+        fallbacks.extend(p for p in fonts if _is_plain(p) and any(
             name in p.stem.lower() for name in
-            ("avenir next", "avenirnext", "helveticaneue", "helvetica neue", "dejavusans")))
+            ("avenir next", "avenirnext", "helveticaneue", "helvetica neue", "dejavusans",
+             "notosans-regular")))
     return sorted(metro, key=lambda p: "regular" not in p.stem.lower()) + fallbacks
 
 

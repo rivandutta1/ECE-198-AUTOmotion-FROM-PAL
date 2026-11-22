@@ -210,8 +210,10 @@ even when the camera or inference is slower than the UI. A short lock protects
 the snapshot reference and a queue carries commands back to the worker.
 [`arm_ui.py`](arm_ui.py) builds the dark dashboard with Pillow,
 NumPy, and OpenCV, placing the selected arm overlay in the fitted video
-viewport. Fonts resolve through `AUTOMOTION_FONT_PATH`, supported local fonts,
-and Pillow fallbacks. Metro Nova is optional and is not bundled.
+viewport. The finished 1600×900 dashboard is then resized with a smooth
+filter to the size the window really shows, because OpenCV's own window
+scaling makes text jagged. Fonts resolve through `AUTOMOTION_FONT_PATH`,
+supported local fonts (Noto Sans or DejaVu Sans on Linux), and Pillow fallbacks. Metro Nova is optional and is not bundled.
 
 **Optional output.** [`serial_link.py`](serial_link.py) opens
 one recognized USB port or honors an explicit override. It sends newline-ended

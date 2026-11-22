@@ -109,3 +109,20 @@ def test_worker_background_operations_without_real_webcam(monkeypatch, camera_on
     finally:
         worker.stop()
     assert closed.is_set()
+
+
+def test_dashboard_is_resized_to_the_window_and_clicks_map_back():
+    canvas = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    # Window shows the image at its own size: nothing to do.
+    same, scale = main.fit_to_window(canvas, (0, 0, WIDTH, HEIGHT))
+    assert same is canvas and scale == 1.0
+    # Smaller window (e.g. a 150%-scaled laptop screen): we shrink it ourselves.
+    small, scale = main.fit_to_window(canvas, (0, 0, 1504, 846))
+    assert small.shape == (846, 1504, 3)
+    assert round(1504 * scale) == WIDTH
+    # The dashboard keeps its shape even if the window's doesn't match.
+    wide, _ = main.fit_to_window(canvas, (0, 0, 1504, 1000))
+    assert wide.shape[:2] == (846, 1504)
+    # No window yet: leave it alone.
+    untouched, scale = main.fit_to_window(canvas, (0, 0, 0, 0))
+    assert untouched is canvas and scale == 1.0
