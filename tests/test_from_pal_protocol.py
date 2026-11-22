@@ -132,10 +132,13 @@ int main() {
 
     feedLine();  // The initial valid packet selects Desktop.
     assert(motionConnected && shows("BICEP CURL") && shows("GOOD") && shows("Reps: 3"));
+    assert(shows("Form looks good"));
     feedLine();
     assert(shows("Reps: 4"));
     feedLine();
     assert(shows("TRICEP PUSHDOWN") && shows("GOOD") && shows("Reps: 4"));
+    feedLine();  // Only the issue changes; the screen must still redraw.
+    assert(shows("Ready for a rep") && !shows("Form looks good"));
     int samplesBefore = distanceSamples;
     now += SAMPLE_INTERVAL_MS;
     loop();
@@ -155,6 +158,7 @@ int main() {
     assert(motionStatus == CANNOT_ASSESS && shows(">Chest: ") && !shows("UNKNOWN"));
     pressButton();
     assert(shows("TRICEP PUSHDOWN") && shows("UNKNOWN") && shows("Reps: 9999"));
+    assert(shows("Move into view"));
 
     const unsigned long lastValid = motionLastStatusMs;
     now = lastValid + MOTION_TIMEOUT_MS - 1;
@@ -165,11 +169,13 @@ int main() {
     now++;
     loop();
     assert(!motionConnected && shows("NO CONNECTION") && !shows("UNKNOWN") && !shows("Reps:"));
+    assert(!shows("Move into view"));
     pressButton();
     assert(shows(">Shoulder: "));
 
     feedLine();  // Reconnection selects Desktop.
     assert(motionConnected && shows("BICEP CURL") && shows("BAD") && shows("Reps: 2"));
+    assert(shows("Stop torso swinging"));
 }
 """)
     executable = tmp_path / "firmware_test"
@@ -182,6 +188,7 @@ int main() {
         feedback_packet("curl", "GOOD", "OK", 3),
         feedback_packet("curl", "GOOD", "OK", 4),
         feedback_packet("pushdown", "GOOD", "OK", 4),
+        feedback_packet("pushdown", "GOOD", "IDLE", 4),
         feedback_packet("pushdown", "BAD", "LEAN", 17).replace(b"\n", b"\r\n"),
         feedback_packet("pushdown", "UNKNOWN", "TRACK", 9999),
         b"F,CURL,GOOD,OK,10000\n",

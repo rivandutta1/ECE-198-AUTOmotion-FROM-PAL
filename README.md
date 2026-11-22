@@ -215,8 +215,10 @@ port, without a firmware acknowledgment. Communication is one-way: the app
 never reads from the Arduino. The FROM-PAL sketch consumes the
 result in Desktop mode and has its own independent Shoulder and Chest modes.
 Its button cycles through the modes. The first valid packet on a connection
-selects Desktop, and the Desktop screen shows **NO CONNECTION** after 1.2
-seconds without valid feedback. The firmware and hardware libraries are
+selects Desktop. The Desktop screen shows the exercise, the status in large
+text, a short explanation of the issue code just below it (for example `LEAN`
+→ "Stop torso swinging"), and the rep count. It shows **NO CONNECTION**
+after 1.2 seconds without valid feedback. The firmware and hardware libraries are
 separate from the desktop app setup.
 
 ## Repository map

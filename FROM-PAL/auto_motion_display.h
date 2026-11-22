@@ -19,6 +19,27 @@ static uint8_t motionCharsRead = 0;
 static bool motionDiscardLine = false;
 static unsigned long motionLastStatusMs = 0;
 
+// The app's ISSUE codes with a short explanation for the Desktop screen.
+// Messages are at most 21 characters: one line of size-1 text on the OLED.
+struct MotionIssue {
+    const char *code;
+    const char *message;
+};
+const MotionIssue MOTION_ISSUES[] = {
+    {"OK", "Form looks good"},
+    {"TRACK", "Move into view"},
+    {"CAL", "Calibrate first"},
+    {"START", "Go to start position"},
+    {"IDLE", "Ready for a rep"},
+    {"LEAN", "Stop torso swinging"},
+    {"ARM", "Keep upper arm still"},
+    {"ROM", "Do a full rep"},
+    {"FORM", "Last rep had a fault"},
+};
+const uint8_t MOTION_ISSUE_COUNT = sizeof(MOTION_ISSUES) / sizeof(MOTION_ISSUES[0]);
+const uint8_t NO_MOTION_ISSUE = 255;
+static uint8_t motionIssue = NO_MOTION_ISSUE;
+
 const unsigned long MOTION_TIMEOUT_MS = 1200;
 
 inline bool motionParseStatus(const char *value, MotionStatus &status) {
@@ -34,6 +55,7 @@ inline void motionParsePacket(char *line) {
     if (strncmp(line, "S,", 2) == 0) {
         if (!motionParseStatus(line + 2, status)) return;
         motionExercise = NO_ARM_EXERCISE;
+        motionIssue = NO_MOTION_ISSUE;
     } else if (strncmp(line, "F,", 2) == 0) {
         char *fields[] = {line + 2, nullptr, nullptr, nullptr};
         for (uint8_t i = 1; i < 4; i++) {
@@ -48,16 +70,14 @@ inline void motionParsePacket(char *line) {
         else return;
         if (!motionParseStatus(fields[1], status)) return;
 
-        const char *issues[] = {"OK", "TRACK", "CAL", "START", "IDLE",
-                                "LEAN", "ARM", "ROM", "FORM"};
-        bool validIssue = false;
-        for (const char *issue : issues) {
-            if (strcmp(fields[2], issue) == 0) {
-                validIssue = true;
+        uint8_t issue = NO_MOTION_ISSUE;
+        for (uint8_t i = 0; i < MOTION_ISSUE_COUNT; i++) {
+            if (strcmp(fields[2], MOTION_ISSUES[i].code) == 0) {
+                issue = i;
                 break;
             }
         }
-        if (!validIssue) return;
+        if (issue == NO_MOTION_ISSUE) return;
 
         size_t digits = strlen(fields[3]);
         if (digits == 0 || digits > 4) return;
@@ -67,6 +87,7 @@ inline void motionParsePacket(char *line) {
             reps = reps * 10 + (*digit - '0');
         }
         motionExercise = exercise;
+        motionIssue = issue;
         motionReps = reps;
     } else {
         return;
@@ -97,20 +118,22 @@ inline void motionReadSerial() {
     }
 }
 
-// Connection, exercise, status, and reps all affect the Desktop display.
+// Connection, exercise, status, issue, and reps all affect the Desktop display.
 inline bool motionUpdate() {
     bool wasConnected = motionConnected;
     MotionStatus previousStatus = motionStatus;
     MotionExercise previousExercise = motionExercise;
+    uint8_t previousIssue = motionIssue;
     unsigned int previousReps = motionReps;
     motionReadSerial();
     if (motionConnected && millis() - motionLastStatusMs >= MOTION_TIMEOUT_MS) {
         motionConnected = false;
         motionStatus = CANNOT_ASSESS;
         motionExercise = NO_ARM_EXERCISE;
+        motionIssue = NO_MOTION_ISSUE;
     }
     return motionConnected != wasConnected || motionStatus != previousStatus ||
-           motionExercise != previousExercise ||
+           motionExercise != previousExercise || motionIssue != previousIssue ||
            (motionExercise != NO_ARM_EXERCISE && motionReps != previousReps);
 }
 
@@ -136,9 +159,12 @@ inline void drawDesktopFeedback() {
 
     const char *label = motionStatus == FORM_GOOD ? "GOOD" :
                         motionStatus == FORM_BAD ? "BAD" : "UNKNOWN";
-    motionDrawCentered(label, 23, 2);
+    motionDrawCentered(label, 17, 2);
+    if (motionIssue != NO_MOTION_ISSUE) {
+        motionDrawCentered(MOTION_ISSUES[motionIssue].message, 37, 1);
+    }
     if (motionExercise != NO_ARM_EXERCISE) {
-        display.setCursor(0, 51);
+        display.setCursor(0, 52);
         display.print("Reps: ");
         display.print(motionReps);
     }
