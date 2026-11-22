@@ -173,6 +173,8 @@ int main() {
     pressButton();
     assert(shows(">Shoulder: "));
 
+    feedLine();  // The old S,<STATUS> packet is no longer accepted.
+    assert(!motionConnected && shows(">Shoulder: "));
     feedLine();  // Reconnection selects Desktop.
     assert(motionConnected && shows("BICEP CURL") && shows("BAD") && shows("Reps: 2"));
     assert(shows("Stop torso swinging"));
@@ -194,6 +196,7 @@ int main() {
         b"F,CURL,GOOD,OK,10000\n",
         b"F,CURL,GOOD,,6\n",
         b"X" * 30 + feedback_packet("curl", "GOOD", "OK", 5),
+        b"S,GOOD\n",
         feedback_packet("curl", "BAD", "LEAN", 2),
     ])
     subprocess.run([str(executable)], input=payload, check=True)

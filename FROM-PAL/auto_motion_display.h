@@ -50,48 +50,43 @@ inline bool motionParseStatus(const char *value, MotionStatus &status) {
     return true;
 }
 
+// Accepts one line from the app: F,<EXERCISE>,<STATUS>,<ISSUE>,<REPS>
+// Anything else (or any invalid field) is ignored.
 inline void motionParsePacket(char *line) {
+    if (strncmp(line, "F,", 2) != 0) return;
     MotionStatus status;
-    if (strncmp(line, "S,", 2) == 0) {
-        if (!motionParseStatus(line + 2, status)) return;
-        motionExercise = NO_ARM_EXERCISE;
-        motionIssue = NO_MOTION_ISSUE;
-    } else if (strncmp(line, "F,", 2) == 0) {
-        char *fields[] = {line + 2, nullptr, nullptr, nullptr};
-        for (uint8_t i = 1; i < 4; i++) {
-            char *comma = strchr(fields[i - 1], ',');
-            if (!comma) return;
-            *comma = '\0';
-            fields[i] = comma + 1;
-        }
-        MotionExercise exercise;
-        if (strcmp(fields[0], "CURL") == 0) exercise = CURL;
-        else if (strcmp(fields[0], "PUSHDOWN") == 0) exercise = PUSHDOWN;
-        else return;
-        if (!motionParseStatus(fields[1], status)) return;
-
-        uint8_t issue = NO_MOTION_ISSUE;
-        for (uint8_t i = 0; i < MOTION_ISSUE_COUNT; i++) {
-            if (strcmp(fields[2], MOTION_ISSUES[i].code) == 0) {
-                issue = i;
-                break;
-            }
-        }
-        if (issue == NO_MOTION_ISSUE) return;
-
-        size_t digits = strlen(fields[3]);
-        if (digits == 0 || digits > 4) return;
-        unsigned int reps = 0;
-        for (const char *digit = fields[3]; *digit; digit++) {
-            if (*digit < '0' || *digit > '9') return;
-            reps = reps * 10 + (*digit - '0');
-        }
-        motionExercise = exercise;
-        motionIssue = issue;
-        motionReps = reps;
-    } else {
-        return;
+    char *fields[] = {line + 2, nullptr, nullptr, nullptr};
+    for (uint8_t i = 1; i < 4; i++) {
+        char *comma = strchr(fields[i - 1], ',');
+        if (!comma) return;
+        *comma = '\0';
+        fields[i] = comma + 1;
     }
+    MotionExercise exercise;
+    if (strcmp(fields[0], "CURL") == 0) exercise = CURL;
+    else if (strcmp(fields[0], "PUSHDOWN") == 0) exercise = PUSHDOWN;
+    else return;
+    if (!motionParseStatus(fields[1], status)) return;
+
+    uint8_t issue = NO_MOTION_ISSUE;
+    for (uint8_t i = 0; i < MOTION_ISSUE_COUNT; i++) {
+        if (strcmp(fields[2], MOTION_ISSUES[i].code) == 0) {
+            issue = i;
+            break;
+        }
+    }
+    if (issue == NO_MOTION_ISSUE) return;
+
+    size_t digits = strlen(fields[3]);
+    if (digits == 0 || digits > 4) return;
+    unsigned int reps = 0;
+    for (const char *digit = fields[3]; *digit; digit++) {
+        if (*digit < '0' || *digit > '9') return;
+        reps = reps * 10 + (*digit - '0');
+    }
+    motionExercise = exercise;
+    motionIssue = issue;
+    motionReps = reps;
     motionStatus = status;
     motionConnected = true;
     motionLastStatusMs = millis();
