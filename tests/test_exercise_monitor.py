@@ -1,76 +1,17 @@
-"""Synthetic landmark tests: not physical accuracy or clinical validation."""
-from dataclasses import dataclass
-from math import sin, cos, radians
+"""ArmExerciseMonitor: calibration, form warnings, rep counting and tracking loss.
 
+Uses synthetic landmarks: not a test of physical accuracy or clinical validity.
+"""
 import pytest
 
-from arm_exercises import ArmExerciseMonitor, measure_arm, GOOD, BAD, UNKNOWN
-
-
-@dataclass
-class P:
-    x: float = .5
-    y: float = .5
-    visibility: float = .99
-    presence: float = .99
-
-
-def points(angle=165, shoulder_x=.50, elbow_x=None, wrist_visible=True, right=True,
-           wrist_x_shift=0.0):
-    """A synthetic arm joint with elbow angle 'angle' in image pixel space."""
-    out = [P() for _ in range(33)]
-    sw = 12 if right else 11
-    ew = 14 if right else 13
-    ww = 16 if right else 15
-    hw = 24 if right else 23
-    shoulder = P(shoulder_x, .30)
-    elbow = P(shoulder_x if elbow_x is None else elbow_x, .48)
-    # Build wrist from measured elbow->shoulder direction (for arm drift tests too).
-    ax = (shoulder.x-elbow.x)*640
-    ay = (shoulder.y-elbow.y)*480
-    from math import hypot, atan2
-    base = atan2(ay, ax)
-    direction = base + radians(angle)
-    wrist = P(elbow.x + (76*cos(direction))/640 + wrist_x_shift,
-              elbow.y + (76*sin(direction))/480)
-    if not wrist_visible:
-        wrist.visibility = .10
-    out[sw], out[ew], out[ww], out[hw] = shoulder, elbow, wrist, P(.5, .76)
-    return out
-
-
-def measurement(angle, **kwargs):
-    return measure_arm(points(angle, **kwargs), 640, 480)
-
-
-def calibrated(exercise="curl"):
-    m = ArmExerciseMonitor(exercise=exercise)
-    m.start_calibration()
-    start_angle = 165 if exercise == "curl" else 100
-    for t in range(0, 1801, 100):
-        last = m.evaluate(measurement(start_angle), t)
-    assert m.calibrated, last
-    assert m.evaluate(measurement(start_angle), 1900).status == UNKNOWN
-    assert m.evaluate(measurement(start_angle), 2000).status == UNKNOWN
-    return m
-
-
-def feed(m, angles, start=2100, step=130):
-    return [m.evaluate(measurement(angle), start+i*step) for i,angle in enumerate(angles)]
+from arm_exercises import ArmExerciseMonitor, ArmPose, measure_arm, GOOD, BAD, UNKNOWN
+from landmark_helpers import points, measurement, calibrated, feed
 
 
 def test_no_calibration_unknown():
     m = ArmExerciseMonitor()
     x = m.evaluate(measurement(165), 100)
     assert x.status == UNKNOWN and x.issue == "CAL"
-
-
-def test_measure_right_and_geometry():
-    x = measurement(90)
-    assert x.valid
-    assert abs(x.elbow_deg - 90) < 1e-6
-    assert abs(x.torso_deg) < 1e-6
-    assert abs(x.upper_arm_deg) < 1e-6
 
 
 def test_missing_arm_returns_unknown_and_instructions():
@@ -190,12 +131,81 @@ def test_wrong_mode_and_side_rejected():
     with pytest.raises(ValueError): measure_arm(points(),640,480,side="middle")
 
 
-def test_small_arms_move_back():
-    p=points()
-    p[14]=P(.5,.31)
-    x=measure_arm(p,640,480)
-    assert not x.valid
+def test_fast_fake_rep_rejected():
+    m = calibrated("curl")
+    m.phase = "LOWERING"
+    m.needs_home = False
+    m.rep_start_ms = 2400
+    m._complete(2550)
+    assert m.reps == 0
+    assert m.last_issue == "ROM"
 
 
-def test_empty_pose_not_good():
-    assert not measure_arm(None, 640, 480).valid
+def test_repeated_threshold_bounce_does_not_double_count():
+    m = calibrated("curl")
+    m.phase = "LOWERING"
+    m.needs_home = False
+    m.rep_start_ms = 2100
+    m._complete(2700)
+    assert m.reps == 1
+    m.phase = "LOWERING"
+    m.rep_start_ms = 2720
+    m._complete(2800)
+    assert m.reps == 1
+
+
+def test_last_frame_lean_warning_is_attributed_to_finished_rep():
+    m = calibrated("curl")
+    m.warning_hold_ms = 0
+    m.needs_home = False
+    m.phase = "LOWERING"
+    m.rep_start_ms = 2300
+    m.angles = [165, 165, 165]
+    m.torso_angles = [20.0, 20.0, 20.0]
+    m.upper_angles = [0.0, 0.0, 0.0]
+    result = m.evaluate(measurement(165, shoulder_x=.61), 3000)
+    assert result.reps == 1
+    assert result.bad_reps == 1
+    assert result.status == "BAD"
+
+
+def test_missing_pose_does_not_report_good():
+    m = calibrated("pushdown")
+    f = m.evaluate(ArmPose(False,"MISSING ARM"), 2400)
+    assert f.status == "UNKNOWN"
+
+
+def test_calibration_short_missing_frame_not_start_over():
+    m = ArmExerciseMonitor("curl", calibration_ms=1500)
+    m.start_calibration()
+    for t in range(0, 901, 100):
+        m.evaluate(measurement(165), t)
+    n = len(m.samples)
+    assert n >= 9
+    assert m.evaluate(measure_arm(None, 640, 480), 950).status == UNKNOWN
+    assert len(m.samples) == n
+    for t in range(1000, 1801, 100):
+        outcome = m.evaluate(measurement(165), t)
+    assert m.calibrated and outcome.calibrated
+
+
+def test_calibration_long_missing_period_resets_samples():
+    m = ArmExerciseMonitor("curl", calibration_ms=1500)
+    m.start_calibration()
+    for t in range(0, 901, 100):
+        m.evaluate(measurement(165), t)
+    m.evaluate(measure_arm(None, 640, 480), 1600)
+    x = m.evaluate(measurement(165), 1700)
+    assert not m.calibrated
+    assert len(m.samples) == 1
+    assert x.status == UNKNOWN
+
+
+def test_unknown_not_false_good_after_occlusion():
+    m = calibrated("curl")
+    m.evaluate(measurement(165), 2100)
+    m.evaluate(measurement(110), 2250)
+    for t in (2400, 2510, 2720, 2900):
+        f = m.evaluate(measure_arm(None, 640, 480), t)
+        assert f.status == UNKNOWN
+    assert m.reps == 0
