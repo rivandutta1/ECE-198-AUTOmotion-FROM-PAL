@@ -26,8 +26,7 @@ def test_no_debug_metrics_on_dark_ui(monkeypatch):
     frame = np.zeros((720, 1280, 3), np.uint8)
     msg = Feedback("GOOD", "Keep moving steadily", "OK", 3, 0, "CURLING",
                    85, 5, 2, .5, .9, True)
-    canvas = ui.draw_screen(frame, None, "right", "curl", msg, True,
-                            fps=60, camera_fps=24)
+    canvas = ui.draw_screen(frame, None, "right", "curl", msg, True)
     assert canvas.shape == (ui.HEIGHT, ui.WIDTH, 3)
     texts = " | ".join(labels).upper()
     assert "GOOD FORM" in texts and "COMPLETED REPS" in texts

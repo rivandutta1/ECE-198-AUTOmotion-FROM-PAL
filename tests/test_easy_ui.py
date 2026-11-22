@@ -51,7 +51,7 @@ def test_render_modes_and_mirror():
     for mode in EXERCISES:
         for mirrored in (True, False):
             canvas = draw_screen(frame, None, "right", mode, feedback,
-                                 False, mirrored=mirrored, fps=18.3)
+                                 False, mirrored=mirrored)
             assert canvas.shape == (HEIGHT, WIDTH, 3)
             assert canvas.dtype == np.uint8
 

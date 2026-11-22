@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from serial_link import feedback_packet, packet
+from serial_link import feedback_packet
 
 
 def test_from_pal_display_modes_and_serial_connection(tmp_path, pytestconfig):
@@ -168,8 +168,8 @@ int main() {
     pressButton();
     assert(shows(">Shoulder: "));
 
-    feedLine();  // Reconnection selects Desktop. Legacy status remains supported.
-    assert(motionConnected && shows("DESKTOP") && shows("BAD") && !shows("Reps:"));
+    feedLine();  // Reconnection selects Desktop.
+    assert(motionConnected && shows("BICEP CURL") && shows("BAD") && shows("Reps: 2"));
 }
 """)
     executable = tmp_path / "firmware_test"
@@ -186,7 +186,7 @@ int main() {
         feedback_packet("pushdown", "UNKNOWN", "TRACK", 9999),
         b"F,CURL,GOOD,OK,10000\n",
         b"F,CURL,GOOD,,6\n",
-        b"X" * 30 + packet("GOOD"),
-        packet("BAD"),
+        b"X" * 30 + feedback_packet("curl", "GOOD", "OK", 5),
+        feedback_packet("curl", "BAD", "LEAN", 2),
     ])
     subprocess.run([str(executable)], input=payload, check=True)

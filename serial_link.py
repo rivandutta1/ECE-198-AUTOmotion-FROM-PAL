@@ -1,8 +1,8 @@
-"""115200 baud USB messages to AUTO-MOTION OLED.
+"""One-way USB serial link (115200 baud) to the FROM-PAL Arduino display.
 
-Legacy: S,GOOD\n / S,BAD\n / S,UNKNOWN\n
-Arm modes: F,CURL,GOOD,OK,2\n or F,PUSHDOWN,BAD,LEAN,5\n
-Only enum-like printable data is accepted; no arbitrary newlines.
+Each packet is one ASCII line: F,<EXERCISE>,<STATUS>,<ISSUE>,<REPS>
+e.g. F,CURL,GOOD,OK,2 or F,PUSHDOWN,BAD,LEAN,5
+Only the values below are accepted, so no arbitrary text reaches the Arduino.
 """
 import time
 
@@ -17,15 +17,8 @@ except ImportError:
     serial = None
 
 VALID_STATUSES = {"GOOD", "BAD", "UNKNOWN"}
-VALID_EXERCISES = {"CURL", "PUSHDOWN", "SHOULDER", "CHEST"}
+VALID_EXERCISES = {"CURL", "PUSHDOWN"}
 VALID_ISSUES = {"OK", "TRACK", "CAL", "START", "IDLE", "LEAN", "ARM", "ROM", "FORM"}
-
-
-def packet(status: str) -> bytes:
-    """Original firmware packet, kept for teammates' existing tests/tools."""
-    if status not in VALID_STATUSES:
-        raise ValueError(f"Invalid status: {status!r}")
-    return f"S,{status}\n".encode("ascii")
 
 
 def feedback_packet(exercise: str, status: str, issue: str, reps: int) -> bytes:
@@ -46,10 +39,6 @@ class SerialLink:
             self.connection = serial.Serial(port=port, baudrate=115200,
                                             timeout=0, write_timeout=0.5)
             time.sleep(2)
-
-    def send(self, status: str) -> None:
-        if self.connection:
-            self.connection.write(packet(status))
 
     def send_feedback(self, exercise: str, status: str, issue: str, reps: int) -> None:
         payload = feedback_packet(exercise, status, issue, reps)

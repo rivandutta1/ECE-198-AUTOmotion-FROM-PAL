@@ -1,10 +1,6 @@
 import pytest
 
-from serial_link import feedback_packet, packet
-
-
-def test_legacy_wire_format_unchanged():
-    assert packet("GOOD") == b"S,GOOD\n"
+from serial_link import feedback_packet
 
 
 def test_arm_packets():

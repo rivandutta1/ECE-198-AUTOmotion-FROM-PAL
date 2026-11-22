@@ -29,8 +29,7 @@ def test_worker_starts_with_nonblocking_snapshot():
     assert s.frame.shape == (720,1280,3)
 
 
-def test_ui_renders_with_separate_rates():
+def test_ui_renders_idle_feedback():
     sample = np.zeros((720,1280,3), dtype=np.uint8)
-    canvas = draw_screen(sample, None, "right", "curl", idle_feedback(),
-                         False, fps=60.0, camera_fps=24.0)
+    canvas = draw_screen(sample, None, "right", "curl", idle_feedback(), False)
     assert canvas.shape == (HEIGHT, WIDTH, 3)

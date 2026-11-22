@@ -127,7 +127,7 @@ def _size_to_px(size):
     return int(round(size * 35))
 
 
-def _text(canvas, value, x, y, size=.68, color=TEXT, thick=1):
+def _text(canvas, value, x, y, size=.68, color=TEXT):
     """Draw text with a real font. y is the baseline, matching old UI tests."""
     font = _font(_size_to_px(size))
     ImageDraw.Draw(canvas).text((int(x), int(y)), str(value), font=font,
@@ -250,8 +250,7 @@ def _draw_pose(canvas, landmarks, side, viewport, mirrored):
 
 
 def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
-                arduino_connected: bool, fps: float = 0.0, mirrored: bool = True,
-                camera_resolution=None, camera_fps=None):
+                arduino_connected: bool, mirrored: bool = True):
     """BGR NumPy in/out, for OpenCV's macOS HighGUI main thread."""
     canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(canvas)

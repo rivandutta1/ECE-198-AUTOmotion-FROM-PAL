@@ -66,8 +66,7 @@ def measure_arm(landmarks: Optional[Sequence[Any]], width: int, height: int,
     if side not in JOINTS:
         raise ValueError("side must be right or left")
     if landmarks is None or len(landmarks) < 33 or width <= 0 or height <= 0:
-        return ArmPose(False, "STEP BACK UNTIL RIGHT ARM AND HIP ARE VISIBLE" if side == "right"
-                       else "STEP BACK UNTIL LEFT ARM AND HIP ARE VISIBLE")
+        return ArmPose(False, f"STEP BACK UNTIL {side.upper()} ARM AND HIP ARE VISIBLE")
     points = {}
     confidence = 1.0
 
@@ -91,8 +90,7 @@ def measure_arm(landmarks: Optional[Sequence[Any]], width: int, height: int,
         result, why = get_point(JOINTS[side][joint])
         if result is None:
             if why == "FRAME":
-                return ArmPose(False, f"MOVE BACK: RIGHT {joint.upper()} OFF SCREEN" if side == "right"
-                               else f"MOVE BACK: LEFT {joint.upper()} OFF SCREEN")
+                return ArmPose(False, f"MOVE BACK: {side.upper()} {joint.upper()} OFF SCREEN")
             return ArmPose(False, f"SHOW {side.upper()} {joint.upper()} IN FRAME")
         points[joint], score = result
         confidence = min(confidence, score)
@@ -179,8 +177,6 @@ class ArmExerciseMonitor:
         self.angles: list[float] = []
         self.torso_angles: list[float] = []
         self.upper_angles: list[float] = []
-        self.highest = 0.0
-        self.lowest = 180.0
         self.rep_bad = False
         self.bad_since: dict[str, int] = {}
         self.issue_until = -1
@@ -227,23 +223,23 @@ class ArmExerciseMonitor:
             return max(0.0, min(1.0, (155.0 - angle) / 65.0))
         return max(0.0, min(1.0, (angle - 110.0) / 50.0))
 
+    def _clear_samples_after_gap(self, ms: int) -> None:
+        """Restart calibration if there has been no usable frame for 500 ms."""
+        if (self.last_calibration_valid_ms is None or
+                ms - self.last_calibration_valid_ms > 500):
+            self.samples.clear()
+
     def _calibration(self, pose: ArmPose, ms: int) -> Feedback:
         if not pose.valid:
             # One bad inference frame should not restart 1.5s of calibration.
-            if (self.last_calibration_valid_ms is None or
-                    ms - self.last_calibration_valid_ms > 500):
-                self.samples.clear()
+            self._clear_samples_after_gap(ms)
             return self._feedback(UNKNOWN, pose.reason, "TRACK", pose)
         # Record rest posture only. It determines a personal torso / upper-arm baseline.
         if self.exercise == "curl" and pose.elbow_deg < 145:
-            if (self.last_calibration_valid_ms is None or
-                    ms - self.last_calibration_valid_ms > 500):
-                self.samples.clear()
+            self._clear_samples_after_gap(ms)
             return self._feedback(UNKNOWN, "RELAX ARM STRAIGHT DOWN TO CALIBRATE", "START", pose)
         if self.exercise == "pushdown" and not (65 <= pose.elbow_deg <= 135):
-            if (self.last_calibration_valid_ms is None or
-                    ms - self.last_calibration_valid_ms > 500):
-                self.samples.clear()
+            self._clear_samples_after_gap(ms)
             return self._feedback(UNKNOWN, "BEND ELBOW AT START OF PUSHDOWN", "START", pose)
         if (self.last_calibration_valid_ms is not None and
                 ms - self.last_calibration_valid_ms > 500):
@@ -352,11 +348,9 @@ class ArmExerciseMonitor:
         if self.exercise == "curl":
             if self.phase == "READY" and angle <= 130:
                 self.phase = "CURLING"
-                self.lowest = angle
                 self.rep_bad = bool(flagged)
                 self.rep_start_ms = ms
             elif self.phase == "CURLING":
-                self.lowest = min(self.lowest, angle)
                 if angle <= 95:
                     self.phase = "LOWERING"
                 elif angle >= 150:
@@ -366,11 +360,9 @@ class ArmExerciseMonitor:
         else:
             if self.phase == "READY" and angle >= 135:
                 self.phase = "PUSHING"
-                self.highest = angle
                 self.rep_bad = bool(flagged)
                 self.rep_start_ms = ms
             elif self.phase == "PUSHING":
-                self.highest = max(self.highest, angle)
                 if angle >= 160:
                     self.phase = "RETURNING"
                 elif angle <= 115:

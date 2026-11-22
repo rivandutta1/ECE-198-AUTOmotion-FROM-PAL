@@ -1,8 +1,4 @@
-"""The two exercise modes supported by AutoMotion's current public interface.
-
-The legacy press monitor remains as an unused file so shared branches are not
-silently deleted; it is not imported or reachable through the UI/CLI.
-"""
+"""The exercises and arms AutoMotion supports, and how to monitor them."""
 from arm_exercises import ArmExerciseMonitor, measure_arm
 
 EXERCISES = ("curl", "pushdown")
@@ -18,7 +14,6 @@ def create_monitor(exercise: str, side: str):
     return ArmExerciseMonitor(exercise, side=side)
 
 
-def evaluate_monitor(monitor, exercise, side, landmarks, width, height, ms):
-    if exercise not in EXERCISES:
-        raise ValueError(f"Exercise not supported: {exercise}")
-    return monitor.evaluate(measure_arm(landmarks, width, height, side=side), ms)
+def evaluate_monitor(monitor: ArmExerciseMonitor, landmarks, width, height, ms):
+    """Measure the monitor's arm in one frame of landmarks and update the monitor."""
+    return monitor.evaluate(measure_arm(landmarks, width, height, side=monitor.side), ms)

@@ -19,12 +19,14 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 
-from app_modes import EXERCISES, SIDES, EXERCISE_NAMES, create_monitor, evaluate_monitor
+from app_modes import EXERCISES, SIDES, create_monitor, evaluate_monitor
 from arm_exercises import Feedback
 from arm_ui import WINDOW_TITLE, WIDTH, HEIGHT, draw_screen, hit_test
 from serial_link import SerialLink, find_arduino_port
 
 TARGET_UI_HZ = 60.0
+SERIAL_SEND_INTERVAL_S = 0.20
+CAMERA_SLOTS = 4  # the CAMERA button cycles through indexes 0-3
 
 
 def camera_setup(camera_index: int, width: int = 1280,
@@ -67,20 +69,20 @@ def idle_feedback(message="Starting camera and pose tracker..."):
 
 @dataclass(frozen=True)
 class Snapshot:
+    """Everything the UI thread needs to draw one frame."""
     frame: np.ndarray
     landmarks: object
     feedback: Feedback
     exercise: str
     side: str
     arduino_connected: bool
-    camera_fps: float
-    error: str | None = None
 
 
 class CameraWorker:
     """Owns ALL blocking video, MediaPipe and serial operations, off the UI thread.
 
     The main thread owns all OpenCV windows and mouse/keyboard handling.
+    It talks to this worker only through send(action) and snapshot().
     A lock protects only a short immutable snapshot reference swap; no camera
     reads, inference, serial operations, or rendering run under that lock.
     """
@@ -92,8 +94,10 @@ class CameraWorker:
         self._thread = threading.Thread(target=self._run, name="automotion-camera", daemon=True)
         placeholder = np.full((720, 1280, 3), (24, 22, 21), dtype=np.uint8)
         self._snapshot = Snapshot(placeholder, None, idle_feedback(),
-                                  args.exercise, args.side, False, 0.0)
+                                  args.exercise, args.side, False)
+        self._last_diagnostic = None
 
+    # --- Called from the UI thread -------------------------------------
     def start(self):
         self._thread.start()
 
@@ -104,149 +108,166 @@ class CameraWorker:
         with self._lock:
             return self._snapshot
 
-    def _publish(self, snapshot):
-        with self._lock:
-            self._snapshot = snapshot
-
     def stop(self):
         self._stop.set()
         self._thread.join(timeout=3.0)
 
-    def _run(self):
-        cap = None
-        tracker = None
-        link = None
+    # --- Worker thread only --------------------------------------------
+    def _publish(self, snapshot):
+        with self._lock:
+            self._snapshot = snapshot
+
+    def _open_camera(self, index):
         a = self.args
-        exercise, side, camera_index = a.exercise, a.side, a.camera
-        monitor = create_monitor(exercise, side)
+        return camera_setup(index, a.camera_width, a.camera_height, a.camera_fps)
+
+    def _open_first_camera(self):
+        """Open --camera, falling back to camera 0 if it is unavailable."""
+        try:
+            return self._open_camera(self.camera_index)
+        except (RuntimeError, cv2.error):
+            if self.camera_index == 0:
+                raise
+            print(f"Camera {self.camera_index} unavailable; trying camera 0", flush=True)
+            self.camera_index = 0
+            return self._open_camera(0)
+
+    def _switch_to_next_camera(self):
+        """Try the next camera indexes in turn; keep the current one if none work."""
+        for step in range(1, CAMERA_SLOTS):
+            candidate = (self.camera_index + step) % CAMERA_SLOTS
+            try:
+                new_cap = self._open_camera(candidate)
+                ok, first_frame = new_cap.read()
+                if not ok:
+                    new_cap.release()
+                    continue
+            except (RuntimeError, cv2.error):
+                continue
+            self.cap.release()
+            self.cap = new_cap
+            self.camera_index = candidate
+            self.monitor = create_monitor(self.exercise, self.side)
+            self.latest_frame = first_frame
+            print(f"Camera switched to {candidate}")
+            return
+        print("No other usable webcam found")
+
+    def _connect_arduino(self):
+        if self.link is not None:
+            self.link.close()
+        self.link, message = make_link(self.args.port)
+        print(message, flush=True)
+
+    def _handle_action(self, action: str):
+        """Apply one UI action (button click or key press)."""
+        kind, _, value = action.partition(":")
+        if kind == "mode" and value in EXERCISES and value != self.exercise:
+            self.exercise = value
+            self.monitor = create_monitor(self.exercise, self.side)
+            self.last_send = -1.0  # tell the Arduino right away
+        elif kind == "side" and value in SIDES and value != self.side:
+            self.side = value
+            self.monitor = create_monitor(self.exercise, self.side)
+            self.last_send = -1.0
+        elif action == "calibrate":
+            self.monitor.start_calibration()
+        elif action == "reset":
+            self.monitor.reset_reps()
+        elif action == "arduino":
+            self._connect_arduino()
+        elif action == "camera":
+            self._switch_to_next_camera()
+
+    def _handle_pending_actions(self):
+        while True:
+            try:
+                action = self._actions.get_nowait()
+            except queue.Empty:
+                return
+            self._handle_action(action)
+
+    def _print_diagnostic(self, ms, result):
+        diagnostic = (self.exercise, self.side, result.status, result.issue, result.message)
+        if diagnostic != self._last_diagnostic:
+            print(f"{ms/1000:.1f}s {self.exercise}/{self.side}: {result.status} - {result.message}")
+            self._last_diagnostic = diagnostic
+
+    def _send_to_arduino(self, now, result):
+        """Send at most one packet every SERIAL_SEND_INTERVAL_S seconds."""
+        if self.link is None or now - self.last_send < SERIAL_SEND_INTERVAL_S:
+            return
+        try:
+            self.link.send_feedback(self.exercise.upper(), result.status, result.issue,
+                                    result.reps)
+        except Exception as exc:
+            print(f"Arduino disconnected: {exc}", flush=True)
+            self.link.close()
+        self.last_send = now
+
+    def _run(self):
+        a = self.args
+        self.exercise, self.side, self.camera_index = a.exercise, a.side, a.camera
+        self.monitor = create_monitor(self.exercise, self.side)
+        self.cap = None
+        self.link = None
+        self.last_send = -1.0
+        self.latest_frame = self.snapshot().frame
+        tracker = None
         started = time.monotonic()
         previous_ts = -1
-        last_send = -1.0
-        previous_frame_time = None
-        camera_fps = 0.0
-        latest_frame = self.snapshot().frame
-        latest_landmarks = None
-        result = idle_feedback()
-        error = None
         try:
-            from vision import VisionTracker
-            try:
-                cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
-            except (RuntimeError, cv2.error):
-                if camera_index == 0:
-                    raise
-                print(f"Camera {camera_index} unavailable; trying camera 0", flush=True)
-                camera_index = 0
-                cap = camera_setup(camera_index, a.camera_width, a.camera_height, a.camera_fps)
+            from vision import VisionTracker  # imported here so tests can run without MediaPipe
+            self.cap = self._open_first_camera()
             tracker = VisionTracker(ROOT / "models" / f"pose_landmarker_{a.model}.task")
-            link, message = make_link(a.port)
-            print(message, flush=True)
+            self._connect_arduino()
             while not self._stop.is_set():
-                while True:
-                    try:
-                        action = self._actions.get_nowait()
-                    except queue.Empty:
-                        break
-                    if action.startswith("mode:"):
-                        mode = action.split(":",1)[1]
-                        if mode in EXERCISES and mode != exercise:
-                            exercise = mode
-                            monitor = create_monitor(exercise, side)
-                            latest_landmarks = None
-                            result = idle_feedback("Press CALIBRATE for the new exercise")
-                            last_send = -1.0
-                    elif action.startswith("side:"):
-                        new_side = action.split(":",1)[1]
-                        if new_side in SIDES and new_side != side:
-                            side = new_side
-                            monitor = create_monitor(exercise, side)
-                            latest_landmarks = None
-                            result = idle_feedback("Press CALIBRATE for the selected arm")
-                            last_send = -1.0
-                    elif action == "calibrate":
-                        monitor.start_calibration()
-                    elif action == "reset":
-                        monitor.reset_reps()
-                    elif action == "arduino":
-                        if link is not None:
-                            link.close()
-                        link, message = make_link(a.port)
-                        print(message, flush=True)
-                    elif action == "camera":
-                        for i in range(1,4):
-                            candidate = (camera_index + i) % 4
-                            try:
-                                new_cap = camera_setup(candidate, a.camera_width,
-                                                       a.camera_height, a.camera_fps)
-                                ok, candidate_frame = new_cap.read()
-                                if not ok:
-                                    new_cap.release()
-                                    continue
-                            except (RuntimeError, cv2.error):
-                                continue
-                            cap.release()
-                            cap = new_cap
-                            camera_index = candidate
-                            monitor = create_monitor(exercise, side)
-                            result = idle_feedback("Camera changed; press CALIBRATE")
-                            latest_frame = candidate_frame
-                            latest_landmarks = None
-                            previous_frame_time = None
-                            camera_fps = 0.0
-                            print(f"Camera switched to {candidate}")
-                            break
-                        else:
-                            print("No other usable webcam found")
+                self._handle_pending_actions()
 
-                ok, frame = cap.read()
+                ok, frame = self.cap.read()
                 if not ok:
                     raise RuntimeError("Camera stopped delivering frames")
                 now = time.monotonic()
-                if previous_frame_time is not None and now > previous_frame_time:
-                    measured_fps = min(90.0, 1.0/(now-previous_frame_time))
-                    camera_fps = measured_fps if not camera_fps else (.88*camera_fps+.12*measured_fps)
-                previous_frame_time = now
+                # MediaPipe VIDEO mode needs strictly increasing timestamps.
                 ms = max(int((now-started)*1000), previous_ts+1)
                 previous_ts = ms
 
                 pose_frame, track_w, track_h = tracking_frame(frame, a.tracking_width)
                 landmarks = tracker.process(pose_frame, ms)
-                result = evaluate_monitor(monitor, exercise, side,
-                                          landmarks, track_w, track_h, ms)
-                latest_frame = frame
-                latest_landmarks = landmarks
+                result = evaluate_monitor(self.monitor, landmarks, track_w, track_h, ms)
+                self.latest_frame = frame
                 if a.debug_tracking:
-                    diagnostic = (exercise, side, result.status, result.issue, result.message)
-                    if getattr(self, "_last_diagnostic", None) != diagnostic:
-                        print(f"{ms/1000:.1f}s {exercise}/{side}: {result.status} - {result.message}")
-                        self._last_diagnostic = diagnostic
-                if now - last_send >= .20 and link is not None:
-                    try:
-                        link.send_feedback(exercise.upper(), result.status, result.issue,
-                                           result.reps)
-                    except Exception as exc:
-                        print(f"Arduino disconnected: {exc}", flush=True)
-                        link.close()
-                    last_send = now
-                self._publish(Snapshot(latest_frame, latest_landmarks, result,
-                                       exercise, side, link is not None and link.connection is not None,
-                                       camera_fps))
+                    self._print_diagnostic(ms, result)
+                self._send_to_arduino(now, result)
+                connected = self.link is not None and self.link.connection is not None
+                self._publish(Snapshot(frame, landmarks, result,
+                                       self.exercise, self.side, connected))
         except Exception as exc:
             error = str(exc)
             print("AutoMotion camera worker:", error, flush=True)
-            self._publish(Snapshot(latest_frame, None,
+            self._publish(Snapshot(self.latest_frame, None,
                                    Feedback("UNKNOWN", error, "TRACK", 0, 0, "WAITING"),
-                                   exercise, side, False, camera_fps, error))
+                                   self.exercise, self.side, False))
         finally:
-            if link is not None:
-                link.close()
+            if self.link is not None:
+                self.link.close()
             if tracker is not None:
                 tracker.close()
-            if cap is not None:
-                cap.release()
+            if self.cap is not None:
+                self.cap.release()
 
 
-def main(argv=None):
+KEY_SHORTCUTS = {
+    ord("1"): "mode:curl", ord("2"): "mode:pushdown",
+    ord("l"): "side:left", ord("L"): "side:left",
+    ord("r"): "side:right", ord("R"): "side:right",
+    ord("c"): "calibrate", ord("C"): "calibrate",
+    ord("m"): "mirror", ord("M"): "mirror",
+    ord("q"): "quit", ord("Q"): "quit", 27: "quit",  # 27 = Esc
+}
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="AutoMotion fitness feedback")
     parser.add_argument("--exercise", choices=EXERCISES, default="curl")
     parser.add_argument("--side", choices=SIDES, default="right")
@@ -268,6 +289,11 @@ def main(argv=None):
         parser.error("Tracking width must be at least 320")
     if not 10 <= args.ui_hz <= 120:
         parser.error("UI refresh target must be from 10 to 120 Hz")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     cv2.setUseOptimized(True)
     worker = CameraWorker(args)
     mirrored = True
@@ -288,31 +314,11 @@ def main(argv=None):
         worker.start()
         frame_interval = 1.0 / args.ui_hz
         next_frame_at = time.perf_counter()
-        previous_ui_frame = None
-        ui_fps = 0.0
-        shortcuts = {
-            ord("1"):"mode:curl", ord("2"):"mode:pushdown",
-            
-            ord("l"):"side:left", ord("L"):"side:left",
-            ord("r"):"side:right", ord("R"):"side:right",
-            ord("c"):"calibrate", ord("C"):"calibrate",
-            ord("m"):"mirror", ord("M"):"mirror",
-            ord("q"):"quit", ord("Q"):"quit", 27:"quit",
-        }
         running = True
         while running:
-            started = time.perf_counter()
-            if previous_ui_frame is not None:
-                elapsed = max(1e-6, started-previous_ui_frame)
-                measured = min(180.0, 1.0/elapsed)
-                ui_fps = measured if not ui_fps else (.85*ui_fps+.15*measured)
-            previous_ui_frame = started
             snap = worker.snapshot()
-            h,w = snap.frame.shape[:2]
             canvas = draw_screen(snap.frame, snap.landmarks, snap.side, snap.exercise,
-                                 snap.feedback, snap.arduino_connected, fps=ui_fps,
-                                 mirrored=mirrored, camera_resolution=(w,h),
-                                 camera_fps=snap.camera_fps)
+                                 snap.feedback, snap.arduino_connected, mirrored=mirrored)
             cv2.imshow(WINDOW_TITLE, canvas)
             key = cv2.waitKey(1) & 0xFF
             try:
@@ -322,8 +328,8 @@ def main(argv=None):
                 break
             actions = pending_clicks[:]
             pending_clicks.clear()
-            if key in shortcuts:
-                actions.append(shortcuts[key])
+            if key in KEY_SHORTCUTS:
+                actions.append(KEY_SHORTCUTS[key])
             for action in actions:
                 if action == "quit":
                     running = False
@@ -332,6 +338,7 @@ def main(argv=None):
                 else:
                     worker.send(action)
 
+            # Sleep until the next UI frame; if far behind, don't try to catch up.
             next_frame_at += frame_interval
             remaining = next_frame_at - time.perf_counter()
             if remaining > 0:
