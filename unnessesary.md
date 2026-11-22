@@ -1,64 +1,75 @@
-# Cleanup proposals
+# Cleanup map
 
-The current desktop app starts at the root [`main.py`](main.py). This review
-uses the imports reachable from that entry point, the separate demo's imports,
-the tests, and the sketches' supported packets. A file can sit outside the
-desktop flow and still serve a teammate's demo, test, or hardware setup.
-Confirm those uses before retiring anything.
+Working notes for the cleanup. This file is removed at the end.
 
-## Older entry points and implementations
+## Live execution path
 
-| Candidate | Evidence and likely reason it remains | Proposed change |
+```
+main.py  main()
+ ├─ argparse → validates options
+ ├─ CameraWorker(args).start()          background thread: _run()
+ │    ├─ camera_setup()                 cv2.VideoCapture (falls back to camera 0)
+ │    ├─ src.vision.VisionTracker       MediaPipe Pose Landmarker (VIDEO mode)
+ │    ├─ make_link() → src.serial_link  SerialLink + find_arduino_port()
+ │    └─ loop:
+ │         drain UI actions (mode/side/calibrate/reset/arduino/camera)
+ │         cap.read() → tracking_frame() → tracker.process()
+ │         src.app_modes.evaluate_monitor()
+ │             → src.arm_exercises.measure_arm() → ArmExerciseMonitor.evaluate()
+ │         every ≥0.2 s: SerialLink.send_feedback() → "F,EXERCISE,STATUS,ISSUE,REPS\n"
+ │         publish an immutable Snapshot
+ └─ UI loop on the main thread (target --ui-hz, default 60):
+      worker.snapshot() → src.arm_ui.draw_screen() → cv2.imshow
+      mouse clicks (hit_test) and keys → worker.send(action) / mirror / quit
+```
+
+Arduino side (`FROM-PAL/`, not modified): `loop()` → `motionUpdate()` →
+`motionReadSerial()` → `motionParsePacket()`. The first packet switches the
+board to DESKTOP mode, where `drawDesktopFeedback()` shows the exercise,
+the status, and the rep count. Serial is one-way (Python → Arduino); Python
+never reads what FROM-PAL prints.
+
+## Files removed or archived (commit 1)
+
+- Deleted: `docs/*` (setup notes for earlier UI versions),
+  `Auto-motion/README.md` (contradicts the root README),
+  `Auto-motion/.gitignore` (duplicate of the root one; its model rule is now
+  `**/models/*.task` in the root file), and `tests/test_serial.py` (only
+  tested the old `S,` packet).
+- Archived in `legacy/` (see `legacy/README.md`): the old camera demo
+  (`Auto-motion/main.py`, `camera.py`, `pose_tracker.py`, `data_types.py`,
+  `form_rules.py`, `geometry.py`, `press_monitor.py`) with its three tests,
+  plus both standalone U8g2 OLED sketches (`rivan_arduino.ino` and
+  `arduino/auto_motion_display/`, renamed by version).
+
+## Unused code inside live files
+
+| File | Unused code | Why it's unused |
 | --- | --- | --- |
-| [`Auto-motion/main.py`](Auto-motion/main.py) and [`camera.py`](Auto-motion/src/camera.py) | This is a second CLI and camera loop. Its shoulder branch runs the earlier torso-lean detector. Its chest option falls through to the preview, and its parsed `--port` never reaches a serial link. The root launcher owns a separate worker, UI, and curl/pushdown monitor. The separate path appears to preserve a teammate's camera demo. | Confirm whether the demo is still used. If it is, label it clearly and give it a name that cannot be confused with the root launcher. Document its real shoulder and preview capabilities. If it is no longer needed, retire the entry point and camera loop together. |
-| [`pose_tracker.py`](Auto-motion/src/pose_tracker.py), [`data_types.py`](Auto-motion/src/data_types.py), and [`vision.py`](Auto-motion/src/vision.py) | Both trackers call MediaPipe Pose Landmarker in VIDEO mode. The older one filters and converts landmarks into a named, pixel-based `PoseFrame` for the demo. The live tracker returns normalized landmarks and takes its model path from the root app. `data_types.py` is still imported by the legacy geometry module. | If the demo stays, share model construction and inference in `VisionTracker` and keep the pixel conversion in an adapter. Preserve the demo's confidence and coordinate behavior. If the demo is retired, remove its tracker and only remove the data types after resolving the geometry dependency. |
-| [`press_monitor.py`](Auto-motion/src/press_monitor.py), [`form_rules.py`](Auto-motion/src/form_rules.py), and [`geometry.py`](Auto-motion/src/geometry.py) | `PressMonitor` has its own `Feedback`, range tracking, and warning logic. Its callers are tests. Its simpler torso rules are also used by the older camera demo. The live `ArmExerciseMonitor` has different exercise phases and calibration. Several angle calculations overlap, but the inputs and scoring rules differ. | Decide whether desktop shoulder/chest tracking is on the roadmap. If it is, either wire in a tested monitor deliberately or keep it clearly marked experimental. Share pure geometry only after checking coordinate and threshold behavior. If it is out of scope, archive the press monitor with its tests and retain any geometry/form code the demo still imports. |
-| [`arduino/auto_motion_display/`](arduino/auto_motion_display) and [`rivan_arduino.ino`](rivan_arduino.ino) | Both are standalone U8g2 display sketches. The former supports legacy `S` and newer `F` packets. The latter only accepts `S` packets, which the current desktop loop does not send. The integrated [FROM-PAL firmware](FROM-PAL) adds physical modes and uses an Adafruit SSD1306 driver. The standalone sketches also offer an SH1106 build option, so they are only partial duplicates. | Treat FROM-PAL as the integrated target. Keep one explicitly labeled standalone alternative if someone still uses a U8g2 or SH1106 display. Confirm what boards are actually deployed before archiving the status-only sketch. |
-| [Legacy serial helpers](Auto-motion/src/serial_link.py) | `packet()` and `SerialLink.send()` implement the old `S,STATUS` format. Repo tests still exercise `packet()` and the firmware still accepts it. The live worker calls `send_feedback()`, and its exercise list contains only curl and pushdown even though the generic encoder accepts shoulder and chest too. | Keep compatibility while older firmware or external tools rely on it. If those consumers are retired, shrink the format and exercise list in a coordinated change across the sender, retained parsers, and tests. |
+| `main.py` | `EXERCISE_NAMES` import | Only `arm_ui.py` uses it. |
+| `main.py` | UI FPS measurement (`previous_ui_frame`, `ui_fps`) | Passed to `draw_screen(fps=...)`, which ignores it. |
+| `main.py` | Camera FPS measurement (`previous_frame_time`, `camera_fps`), `Snapshot.camera_fps`, `camera_resolution=(w, h)` | Same: `draw_screen` ignores `camera_fps` and `camera_resolution`. |
+| `main.py` | `Snapshot.error` | Set when the worker crashes but never read; the error text already reaches the UI through `feedback.message`. |
+| `arm_ui.py` | `draw_screen(fps, camera_resolution, camera_fps)` params; `_text(thick=)` param | Never drawn or used. |
+| `arm_exercises.py` | `ArmExerciseMonitor.highest` / `.lowest` | Written on each rep, never read. |
+| `serial_link.py` | `packet()`, `SerialLink.send()`, `VALID_EXERCISES` SHOULDER/CHEST | The app only sends `F,CURL…` / `F,PUSHDOWN…`. FROM-PAL rejects SHOULDER/CHEST anyway. |
+| `app_modes.py` | Exercise check in `evaluate_monitor()`; side/exercise checks in `create_monitor()` | Repeated: `ArmExerciseMonitor.__init__` already validates both, and the worker only ever stores valid values. |
+| `FROM-PAL` (not modified) | `S,<STATUS>` branch in `motionParsePacket`; the ISSUE field is validated but never displayed | Python never sends `S` packets. |
 
-## Small cleanup candidates in the live path
+Kept on purpose: the extra `Feedback` fields (`bad_reps`, `stage`, angles,
+`progress`, `confidence`). The UI doesn't show them, but the tests check
+them and they describe the monitor's state.
 
-- The root app imports `EXERCISE_NAMES` without using it. Remove that import
-  and retain the one in the dashboard, which uses it for display labels.
-- `draw_screen()` accepts `fps`, `camera_resolution`, and `camera_fps` but
-  draws none of them. The main loop still measures render FPS and the worker
-  measures camera cadence to supply those arguments. The old UI setup notes
-  describe visible diagnostics, which may explain those remnants. Either
-  expose the measurements through an intentional debug feature or remove the
-  unused arguments and measurement code together. Preserve the `--ui-hz`
-  render scheduler and `--camera-fps` capture request.
-- `ArmExerciseMonitor.highest` and `.lowest` track a rep's extrema, but
-  completion is driven by angle thresholds and state transitions. There is no
-  current reader for those extrema. Remove them if there are no consumers
-  outside the checkout. Keep the threshold and rep-timing tests.
-- NumPy is imported by the desktop app and UI, while
-  [`requirements.txt`](requirements.txt) gets it indirectly through vision
-  packages. Declare it as a direct dependency when refreshing the dependency
-  list. Consider a separate development requirements file for pytest once the
-  project has a stable setup on all three platforms.
+## Hard-to-read code to simplify
 
-## Repository and documentation
-
-- [`Auto-motion/README.md`](Auto-motion/README.md) and the UI/setup notes in
-  [`docs/`](docs) describe earlier states of the project. Some still assume
-  a ZIP patch, a pastel dashboard, an absent I²C scanner, or a different OLED
-  sketch. Keep historical notes where they explain decisions, label them as
-  historical, and point users to the root README for installation.
-- [`docs/test_results.md`](docs/test_results.md) is a shoulder-press physical
-  test plan with results still pending. Rename or label it as a plan and
-  record current curl/pushdown observations in a separate report if the team
-  runs those checks.
-- [`Auto-motion/.gitignore`](Auto-motion/.gitignore) largely duplicates the
-  [root ignore rules](.gitignore). The nested `models/*.task` rule applies to
-  the demo's local model location, while the root rule covers the live
-  app's model directory. Preserve both locations if consolidating the ignore
-  rules, and check the result with `git check-ignore`.
-- A future package cleanup could move the active modules under one importable
-  package and keep one public launcher. Do this after deciding the fate of
-  the demo. Update the launcher, test paths, and any local shortcut together
-  so the checkout continues to run without a manually set `PYTHONPATH`.
-
-A low-risk first pass is to clarify the old setup notes and remove the
-unused import. Confirm demo and display use with teammates before moving or
-removing either implementation. After each cleanup, run the tests and smoke
-test the current CLI, both exercises, and any retained demo or display.
+- Python modules are hidden under `Auto-motion/src/`, which forces
+  `sys.path` tricks in `main.py` and `pytest.ini`. Move them next to `main.py`.
+- `CameraWorker._run()` is about 130 lines and mixes setup, UI action
+  handling, and the frame loop. Split the action handling into a method.
+- The same "keep calibration samples unless the gap is longer than 500 ms"
+  block is copied three times in `ArmExerciseMonitor._calibration()`.
+- `measure_arm()` builds the same message twice with `"RIGHT" if side ==
+  "right" else "LEFT"` instead of using `side.upper()`.
+- `app_modes.py`'s docstring still describes the press monitor.
+- `requirements.txt` doesn't list NumPy, which `main.py` and `arm_ui.py`
+  import directly.

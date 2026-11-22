@@ -1,3 +1,5 @@
+#! .venv/bin/python
+
 """AutoMotion: independent 60 Hz UI and asynchronous camera/pose/Arduino work.
 
 OpenCV HighGUI's rendering cadence is a *target*, not a screen vsync guarantee.
