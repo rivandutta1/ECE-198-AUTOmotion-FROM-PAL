@@ -18,6 +18,9 @@ except ImportError:
 
 VALID_STATUSES = {"GOOD", "BAD", "UNKNOWN"}
 VALID_EXERCISES = {"CURL", "PUSHDOWN"}
+# Opening the port can reset the Arduino; it ignores serial input while it boots.
+ARDUINO_STARTUP_S = 2.0
+
 VALID_ISSUES = {"OK", "TRACK", "CAL", "START", "IDLE", "LEAN", "ARM", "ROM", "FORM"}
 
 
@@ -33,16 +36,19 @@ def feedback_packet(exercise: str, status: str, issue: str, reps: int) -> bytes:
 class SerialLink:
     def __init__(self, port: str | None = None):
         self.connection = None
+        self._ready_at = 0.0
         if port:
             if serial is None:
                 raise RuntimeError("Install pyserial: pip install pyserial")
             self.connection = serial.Serial(port=port, baudrate=115200,
                                             timeout=0, write_timeout=0.5)
-            time.sleep(2)
+            # Don't block the camera thread while the board boots: packets
+            # sent before this time are skipped (a new one follows every 0.2 s).
+            self._ready_at = time.monotonic() + ARDUINO_STARTUP_S
 
     def send_feedback(self, exercise: str, status: str, issue: str, reps: int) -> None:
         payload = feedback_packet(exercise, status, issue, reps)
-        if self.connection:
+        if self.connection and time.monotonic() >= self._ready_at:
             self.connection.write(payload)
 
     def close(self) -> None:

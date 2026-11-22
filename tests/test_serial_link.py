@@ -38,3 +38,25 @@ def test_autodetect_only_unambiguous_arduino(monkeypatch):
     Ports.comports = lambda: [fake("/dev/cu.x", "Arduino", 0x2341),
                               fake("/dev/cu.y", "Arduino", 0x2341)]
     assert find_arduino_port() is None
+
+
+def test_opening_the_port_does_not_block_and_waits_for_arduino_boot(monkeypatch):
+    written = []
+    class FakeSerial:
+        def __init__(self, **kwargs):
+            pass
+        def write(self, data):
+            written.append(data)
+        def close(self):
+            pass
+    clock = [100.0]
+    monkeypatch.setattr(serial_link, "serial", SimpleNamespace(Serial=FakeSerial))
+    monkeypatch.setattr(serial_link.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(serial_link.time, "sleep",
+                        lambda _s: pytest.fail("SerialLink must not sleep"))
+    link = serial_link.SerialLink("/dev/fake")
+    link.send_feedback("CURL", "GOOD", "OK", 1)
+    assert written == []  # still booting
+    clock[0] += serial_link.ARDUINO_STARTUP_S
+    link.send_feedback("CURL", "GOOD", "OK", 2)
+    assert written == [b"F,CURL,GOOD,OK,2\n"]
