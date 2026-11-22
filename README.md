@@ -6,10 +6,10 @@ form feedback and completed reps. The app runs locally and can optionally send
 the same exercise, status, and rep count to a FROM-PAL OLED over USB. A webcam
 and a graphical desktop session are enough to use the app.
 
-Run [the root `main.py`](main.py) for the current app. There is also an older
-[shoulder camera demo](Auto-motion/main.py) with its own entry point. See the
-[repository map](#repository-map) for where each implementation fits and
-[unnessesary.md](unnessesary.md) for proposed cleanup.
+Run [the root `main.py`](main.py) for the current app; the Arduino firmware is
+in [`FROM-PAL/`](FROM-PAL). Older code that is no longer used is archived in
+[`legacy/`](legacy). See the [repository map](#repository-map) for where
+everything lives.
 
 ## Install and run the desktop app
 
@@ -111,7 +111,8 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
 | `M` | Toggle mirror preview |
 | `Q` / `Esc` | Exit |
 
-Use `main.py --help` with the environment's interpreter for all options.
+Use `main.py --help` with the environment's interpreter for all options. On
+macOS and Linux, `./main.py` from the repository root also uses `.venv`.
 `--exercise pushdown` and `--side left` change the startup selections.
 `--camera 1` requests index 1 and falls back to 0 if it cannot open.
 `--debug-tracking` logs changes in the tracking or form decision.
@@ -152,18 +153,18 @@ Camera → OpenCV frame → VisionTracker → normalized body landmarks
                      latest Snapshot → UI       SerialLink → optional OLED
 ```
 
-**Capture and inference.** [`main.py`](main.py) resolves the repository root
-and adds `Auto-motion/` to Python's import path. Its `CameraWorker` owns
+**Capture and inference.** [`main.py`](main.py) parses the options and starts
+a `CameraWorker` thread. The worker owns
 the capture device, MediaPipe detector, exercise monitor, and optional serial
 port. The worker keeps the original frame for the preview, shrinks wider
 frames for inference while preserving aspect ratio, and supplies strictly
-increasing millisecond timestamps. [`vision.py`](Auto-motion/src/vision.py)
+increasing millisecond timestamps. [`vision.py`](vision.py)
 converts BGR to RGB and runs MediaPipe Pose Landmarker in VIDEO mode for one
 person. It returns the first pose's normalized image landmarks or `None`.
 
-**Measurement.** [`app_modes.py`](Auto-motion/src/app_modes.py) validates the
+**Measurement.** [`app_modes.py`](app_modes.py) validates the
 exercise and arm, creates the monitor, and routes landmarks through
-`measure_arm()` in [`arm_exercises.py`](Auto-motion/src/arm_exercises.py).
+`measure_arm()` in [`arm_exercises.py`](arm_exercises.py).
 Measurement checks landmark visibility, presence, framing, and limb size. It
 can use the opposite hip when the selected hip is occluded. It scales positions
 to pixels so angles account for the image aspect ratio. The resulting
@@ -195,17 +196,18 @@ their accuracy.
 keyboard handling, and mouse hit tests. It renders the most recent `Snapshot`
 even when the camera or inference is slower than the UI. A short lock protects
 the snapshot reference and a queue carries commands back to the worker.
-[`arm_ui.py`](Auto-motion/src/arm_ui.py) builds the dark dashboard with Pillow,
+[`arm_ui.py`](arm_ui.py) builds the dark dashboard with Pillow,
 NumPy, and OpenCV, placing the selected arm overlay in the fitted video
 viewport. Fonts resolve through `AUTOMOTION_FONT_PATH`, supported local fonts,
 and Pillow fallbacks. Metro Nova is optional and is not bundled.
 
-**Optional output.** [`serial_link.py`](Auto-motion/src/serial_link.py) opens
+**Optional output.** [`serial_link.py`](serial_link.py) opens
 one recognized USB port or honors an explicit override. It sends newline-ended
 ASCII like `F,CURL,GOOD,OK,3` at 115200 baud, with fields for exercise, status,
 issue, and reps. The worker attempts a send about every 200 ms while processing
 frames. The link is optional and the UI's connected indicator reports an open
-port, without a firmware acknowledgment. The FROM-PAL sketch consumes the
+port, without a firmware acknowledgment. Communication is one-way: the app
+never reads from the Arduino. The FROM-PAL sketch consumes the
 result in Desktop mode and has its own independent Shoulder and Chest modes.
 Its button cycles through the modes. The first valid packet on a connection
 selects Desktop, and the Desktop screen shows **NO CONNECTION** after 1.2
@@ -216,20 +218,18 @@ separate from the desktop app setup.
 
 | Path | What it contains and where it runs |
 | --- | --- |
-| [`main.py`](main.py) | Current desktop entry point. Owns the worker, render loop, input bindings, and lifecycle. |
-| [`Auto-motion/src/`](Auto-motion/src) | Shared source directory. The live app imports `app_modes.py`, `arm_exercises.py`, `arm_ui.py`, `serial_link.py`, and `vision.py`. |
-| [`Auto-motion/main.py`](Auto-motion/main.py), [`camera.py`](Auto-motion/src/camera.py), [`pose_tracker.py`](Auto-motion/src/pose_tracker.py), [`data_types.py`](Auto-motion/src/data_types.py) | Separate older camera demo. It converts selected normalized landmarks to named pixel coordinates and overlays them on an OpenCV preview. Its shoulder path calls the older geometry and form rules. The chest choice has no matching evaluator in its camera loop, and the demo's parsed port is never passed to a serial connection. |
-| [`geometry.py`](Auto-motion/src/geometry.py), [`form_rules.py`](Auto-motion/src/form_rules.py) | Earlier torso-lean pipeline. The demo calls `measure_pose_frame()` and `FormMonitor`. The normalized `measure_pose()` path also serves the experimental press monitor and tests. These modules sit outside the active curl and pushdown flow. |
-| [`press_monitor.py`](Auto-motion/src/press_monitor.py) | Experimental shoulder/chest scoring with its own feedback, warning, and range tracking types. Exercised by tests. Neither Python CLI instantiates it. |
-| [`FROM-PAL/`](FROM-PAL) | Current integrated firmware. `FROM-PAL.ino` handles the OLED, button, and independent ultrasonic tracking with Wire and Adafruit libraries. `auto_motion_display.h` parses serial feedback and draws the Desktop view. |
-| [`arduino/auto_motion_display/`](arduino/auto_motion_display), [`rivan_arduino.ino`](rivan_arduino.ino) | Standalone U8g2 OLED sketches. The former accepts `F` and legacy `S` packets for a display-only setup. The latter is the status-only `S` prototype. Both are independent of the integrated FROM-PAL sketch. |
-| [`docs/`](docs), [`Auto-motion/README.md`](Auto-motion/README.md) | Prior setup notes, UI iterations, an older demo overview, and a shoulder-press physical test plan. Some commands refer to old bundles, scripts, or sketches. Use this README for the current checkout. |
-| [`requirements.txt`](requirements.txt), [`pytest.ini`](pytest.ini), [`tests/`](tests) | Python dependencies, the test import paths, and automated checks for the desktop app, older press rules, and FROM-PAL protocol. |
-| [`.gitignore`](.gitignore), [`Auto-motion/.gitignore`](Auto-motion/.gitignore) | Ignore rules for local models, recordings, environments, caches, and editor files. The two sets mostly overlap. |
+| [`main.py`](main.py) | Desktop entry point. Parses options, runs the `CameraWorker` thread (camera, pose, monitor, serial) and the UI loop (window, mouse, keys). Run it from the repository root. |
+| [`vision.py`](vision.py) | MediaPipe Pose Landmarker wrapper. The only module that imports MediaPipe. |
+| [`app_modes.py`](app_modes.py) | The supported exercises and arms, plus `create_monitor()` / `evaluate_monitor()`. |
+| [`arm_exercises.py`](arm_exercises.py) | `measure_arm()` turns landmarks into angles; `ArmExerciseMonitor` handles calibration, form warnings, and rep counting. No camera dependency. |
+| [`arm_ui.py`](arm_ui.py) | Draws the dashboard and maps mouse clicks to actions (`hit_test`). |
+| [`serial_link.py`](serial_link.py) | Builds `F,...` packets and finds and opens the Arduino USB port. |
+| [`FROM-PAL/`](FROM-PAL) | Arduino firmware. `FROM-PAL.ino` handles the OLED, button, and independent ultrasonic Shoulder/Chest tracking with Wire and Adafruit libraries. `auto_motion_display.h` parses the app's serial packets and draws the Desktop view. |
+| [`legacy/`](legacy) | Archived, unused code: the first camera demo with its shoulder/chest press rules and tests, and two earlier standalone OLED sketches. See [`legacy/README.md`](legacy/README.md). |
+| [`requirements.txt`](requirements.txt), [`pytest.ini`](pytest.ini), [`tests/`](tests) | Python dependencies, test settings, and the automated tests for the app and the FROM-PAL protocol. |
 
 OpenCV supplies camera I/O and HighGUI windows. MediaPipe supplies the pose
-landmarks. NumPy is imported directly for image arrays and is currently
-installed through the vision dependencies. Pillow renders the dashboard and
+landmarks. NumPy holds the image arrays. Pillow renders the dashboard and
 text, pySerial handles optional USB output, and pytest runs the tests.
 The `models/` and `.venv/` directories are local setup outputs.
 
@@ -237,8 +237,7 @@ The `models/` and `.venv/` directories are local setup outputs.
 
 From the repository root, run `.venv/bin/python -m pytest -q` on macOS or
 Fedora, or `.\.venv\Scripts\python.exe -m pytest -q` in PowerShell.
-`pytest.ini` makes the root entry point and the nested `src` modules
-importable for tests.
+`pytest.ini` makes the root modules importable and runs only `tests/`.
 
 - Exercise and tracking tests use synthetic landmark sequences to check
   calibration, warnings, rep transitions, and recovery from missing landmarks.
@@ -249,8 +248,7 @@ importable for tests.
   The FROM-PAL integration test compiles the actual sketch as a host program
   against simulated Arduino APIs and feeds it Python-generated packets. It
   skips if a `c++` compiler is unavailable.
-- Legacy geometry, form, and press tests preserve behavior for the older code.
-  Real camera accuracy, OS-specific device behavior, and the physical OLED
+- Archived tests in `legacy/` are not run. Real camera accuracy, OS-specific device behavior, and the physical OLED
   require separate checks.
 
 ## Project roles
