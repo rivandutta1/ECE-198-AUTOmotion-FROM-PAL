@@ -15,11 +15,10 @@ everything lives.
 
 Use **Python 3.11**, the version used by this project. Set up a new virtual
 environment on each computer and run all commands from the repository root.
-Install Git if you need to clone the project. The curl and pushdown app is on
-the `karthik/arm-exercises` branch in this repository.
+Install Git if you need to clone the project. The app is on the `main` branch.
 
 ```sh
-git clone --branch karthik/arm-exercises https://github.com/rivandutta1/auto-motion-tuesday.git
+git clone --branch main https://github.com/rivandutta1/auto-motion-tuesday.git
 cd auto-motion-tuesday
 ```
 
@@ -61,7 +60,7 @@ python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p models
 curl -fL https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task -o models/pose_landmarker_lite.task
-.venv/bin/python main.py --exercise curl --camera 0
+./main.py --exercise curl --camera 0
 ```
 
 If importing OpenCV reports a missing `libGL.so.1`, install the Fedora GLX
@@ -99,7 +98,11 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
    says it is ready. Recalibrate after moving the camera or changing exercises
    or arms.
 3. Move through the exercise and return to the starting position under
-   control. **Reset reps** clears the counts and preserves your calibration.
+   control. The panel on the right shows your form, the next step, how far
+   through the current rep you are, and the details: completed and flagged
+   reps, rep stage, tracking confidence, elbow angle, and how far your torso
+   and upper arm have moved from their calibrated position.
+   **Reset reps** clears the counts and preserves your calibration.
    **Mirror** flips the preview and overlay together while keeping the selected
    anatomical arm the same. **Camera** tries other available indices from 0–3.
 
@@ -112,7 +115,9 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
 | `Q` / `Esc` | Exit |
 
 Use `main.py --help` with the environment's interpreter for all options. On
-macOS and Linux, `./main.py` from the repository root also uses `.venv`.
+macOS and Linux, `./main.py` works from the repository root: its first line
+runs it with `.venv/bin/python`. `python main.py` ignores that line, so other
+ways of launching it are unaffected.
 `--exercise pushdown` and `--side left` change the startup selections.
 `--camera 1` requests index 1 and falls back to 0 if it cannot open.
 `--debug-tracking` logs changes in the tracking or form decision.
@@ -186,7 +191,7 @@ before a rep can resume.
 
 Partial range or implausibly fast motion can produce a warning without adding
 a rep. A full rep with a form warning increments both the completed and flagged
-counts. The current dashboard displays completed reps. `GOOD` means tracked
+counts, and the dashboard shows both. `GOOD` means tracked
 movement without a flagged issue, `BAD` means a rule flagged the movement,
 and `UNKNOWN` covers missing input, calibration, and waiting. These are
 experimental 2D heuristics. Camera placement, occlusion, and movement affect
@@ -239,17 +244,22 @@ From the repository root, run `.venv/bin/python -m pytest -q` on macOS or
 Fedora, or `.\.venv\Scripts\python.exe -m pytest -q` in PowerShell.
 `pytest.ini` makes the root modules importable and runs only `tests/`.
 
-- Exercise and tracking tests use synthetic landmark sequences to check
-  calibration, warnings, rep transitions, and recovery from missing landmarks.
-- UI and worker tests check the rendered canvas, controls, and background
-  pipeline with a fake camera, tracker, and serial link. Some filenames reflect
-  older interface designs.
-- Serial tests cover packet formatting, input validation, and port selection.
-  The FROM-PAL integration test compiles the actual sketch as a host program
-  against simulated Arduino APIs and feeds it Python-generated packets. It
-  skips if a `c++` compiler is unavailable.
-- Archived tests in `legacy/` are not run. Real camera accuracy, OS-specific device behavior, and the physical OLED
-  require separate checks.
+No webcam, MediaPipe model, or Arduino is needed: the tests use synthetic
+landmarks and fake hardware.
+
+| Test file | What it checks |
+| --- | --- |
+| [`test_app_modes.py`](tests/test_app_modes.py) | Only curl and pushdown, on the left or right arm, can be monitored. |
+| [`test_arm_measurement.py`](tests/test_arm_measurement.py) | `measure_arm()`: joint angles from landmarks, confidence and visibility limits, the opposite-hip fallback, and rejection of off-screen, overlapping, or missing joints. |
+| [`test_exercise_monitor.py`](tests/test_exercise_monitor.py) | `ArmExerciseMonitor`: calibration (holding still, correct start pose, short dropouts), good and partial reps for both exercises, torso-lean and upper-arm warnings, rejection of too-fast or double-counted reps, and tracking loss. |
+| [`test_dashboard_ui.py`](tests/test_dashboard_ui.py) | `arm_ui.py`: the dashboard renders for every status, exercise, and mirror setting; buttons are large and clickable; the overlay follows mirroring; every measurement is shown and fits in the panel. |
+| [`test_serial_link.py`](tests/test_serial_link.py) | `serial_link.py`: `F` packet format, rejection of invalid values, Arduino port auto-detection, and that connecting doesn't block while the board boots. |
+| [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), plus the UI rate and the downscaling of inference frames. |
+| [`test_from_pal_protocol.py`](tests/test_from_pal_protocol.py) | Compiles the real `FROM-PAL` sketch for your computer with simulated Arduino hardware and feeds it packets made by `serial_link.py`: mode button, Desktop screen, timeouts, and malformed lines. Skipped if no `c++` compiler is installed. |
+| [`landmark_helpers.py`](tests/landmark_helpers.py) | Not a test: builds the synthetic arm poses used by the measurement and monitor tests. |
+
+Tests archived in `legacy/` are not run. Real camera accuracy, OS-specific
+device behavior, and the physical OLED still need to be checked by hand.
 
 ## Project roles
 

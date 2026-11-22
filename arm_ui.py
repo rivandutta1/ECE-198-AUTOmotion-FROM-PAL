@@ -373,7 +373,7 @@ def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
     _draw_details(canvas, feedback, DETAILS_RECT)
     _draw_button(canvas, next(b for b in controls() if b.action=="calibrate"))
 
-    _text(canvas, "Camera guidance only  •  Not a medical or safety assessment",
+    _text(canvas, "Camera guidance only - Not a medical or safety assessment",
           30, 893, .47, SOFT)
     # OpenCV expects BGR uint8.
     return cv2.cvtColor(np.asarray(canvas), cv2.COLOR_RGB2BGR)
