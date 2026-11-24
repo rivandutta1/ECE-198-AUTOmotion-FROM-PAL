@@ -9,3 +9,6 @@ __pycache__/
 *.mp4
 *.avi
 *.mov
+
+# Saved workout history (personal data, stays on this computer)
+data/

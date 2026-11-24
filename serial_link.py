@@ -1,9 +1,16 @@
-"""One-way USB serial link (115200 baud) to the FROM-PAL Arduino display.
+"""USB serial link (115200 baud) to the FROM-PAL Arduino.
 
-Each packet is one ASCII line: F,<EXERCISE>,<STATUS>,<ISSUE>,<REPS>
+App -> Arduino, one ASCII line per update: F,<EXERCISE>,<STATUS>,<ISSUE>,<REPS>
 e.g. F,CURL,GOOD,OK,2 or F,PUSHDOWN,BAD,LEAN,5
 Only the values below are accepted, so no arbitrary text reaches the Arduino.
+
+Arduino -> app, whenever a handheld press total changes (and on connect):
+P,<SESSION>,<SHOULDER|CHEST>,<REPS>,<MAX ROM CM>   e.g. P,48213,CHEST,5,32
+Any other line the Arduino prints (debug messages) is ignored.
 """
+from __future__ import annotations
+
+from dataclasses import dataclass
 import time
 
 try:
@@ -33,10 +40,37 @@ def feedback_packet(exercise: str, status: str, issue: str, reps: int) -> bytes:
     return f"F,{exercise},{status},{issue},{reps}\n".encode("ascii")
 
 
+PRESS_EXERCISES = ("SHOULDER", "CHEST")
+MAX_LINE_BYTES = 256  # longer than any packet: a runaway line is dropped
+
+
+@dataclass(frozen=True)
+class PressTotals:
+    """One handheld press's totals for one Arduino power-on session."""
+    session: str
+    exercise: str  # SHOULDER or CHEST
+    reps: int
+    rom_cm: int
+
+
+def parse_press_packet(line: str) -> PressTotals | None:
+    """Parse a P line from the Arduino; anything else (or invalid) -> None."""
+    parts = line.strip().split(",")
+    if len(parts) != 5 or parts[0] != "P" or parts[2] not in PRESS_EXERCISES:
+        return None
+    session, reps, rom = parts[1], parts[3], parts[4]
+    if not (session.isdigit() and reps.isdigit() and rom.isdigit()):
+        return None
+    if len(session) > 10 or int(reps) > 99999 or int(rom) > 1000:
+        return None
+    return PressTotals(session, parts[2], int(reps), int(rom))
+
+
 class SerialLink:
     def __init__(self, port: str | None = None):
         self.connection = None
         self._ready_at = 0.0
+        self._incoming = b""
         if port:
             if serial is None:
                 raise RuntimeError("Install pyserial: pip install pyserial")
@@ -50,6 +84,18 @@ class SerialLink:
         payload = feedback_packet(exercise, status, issue, reps)
         if self.connection and time.monotonic() >= self._ready_at:
             self.connection.write(payload)
+
+    def read_lines(self) -> list[str]:
+        """Complete lines the Arduino has sent since the last call (never blocks)."""
+        if not self.connection:
+            return []
+        waiting = self.connection.in_waiting
+        if waiting:
+            self._incoming += self.connection.read(waiting)
+        *lines, self._incoming = self._incoming.split(b"\n")
+        if len(self._incoming) > MAX_LINE_BYTES:
+            self._incoming = b""
+        return [line.decode("ascii", "ignore").strip() for line in lines]
 
     def close(self) -> None:
         if self.connection:

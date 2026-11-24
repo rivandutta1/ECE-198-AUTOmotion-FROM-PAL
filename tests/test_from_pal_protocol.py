@@ -17,6 +17,7 @@ def test_from_pal_display_modes_and_serial_connection(tmp_path, pytestconfig):
 #include <algorithm>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sstream>
 #include <string>
 using std::max;
 using std::min;
@@ -31,8 +32,16 @@ struct TestSerial {
         input.erase(0, 1);
         return ch;
     }
-    template <class T> void print(T) {}
-    template <class T> void println(T) {}
+    std::string output;  // everything the sketch printed
+    template <class T> void print(T value) {
+        std::ostringstream text;
+        text << value;
+        output += text.str();
+    }
+    template <class T> void println(T value) {
+        print(value);
+        output += "\\n";
+    }
 };
 extern TestSerial Serial;
 
@@ -42,6 +51,11 @@ unsigned long pulseIn(int pin, int level, unsigned long timeout);
 inline void pinMode(int, int) {}
 inline void digitalWrite(int, int) {}
 inline void delayMicroseconds(unsigned int) {}
+const int A0 = 14;
+inline int analogRead(int) { return 512; }
+inline unsigned long micros() { return 0; }
+inline void randomSeed(unsigned long) {}
+inline long random(long, long) { return 4242; }  // fixed session id for the test
 """)
     (tmp_path / "Wire.h").write_text("""
 #pragma once
@@ -99,6 +113,13 @@ void updateDisplay();
 void trackDistance();
 #include "FROM-PAL.ino"
 
+int sent(const char *packet) {  // how many times the sketch printed this line
+    int count = 0;
+    for (size_t at = Serial.output.find(packet); at != std::string::npos;
+         at = Serial.output.find(packet, at + 1)) count++;
+    return count;
+}
+
 bool shows(const char *text) {
     return display.visible.find(text) != std::string::npos;
 }
@@ -146,14 +167,17 @@ int main() {
 
     pressButton();
     assert(shows(">Shoulder: "));
+    assert(Serial.output.find("P,") == std::string::npos);  // nothing to save yet
     registerRep(startingDistance + 10);
     assert(repCountShoulder == 1 && repCountChest == 0);
+    assert(sent("P,4242,SHOULDER,0,10\\n") == 1);
     feedLine();  // Live status updates stay off the standalone screen.
     assert(motionStatus == FORM_BAD && shows(">Shoulder: ") && !shows("BAD"));
     pressButton();
     assert(shows(">Chest: "));
     registerRep(startingDistance + 10);
     assert(repCountShoulder == 1 && repCountChest == 1);
+    assert(sent("P,4242,CHEST,0,10\\n") == 1);
     feedLine();
     assert(motionStatus == CANNOT_ASSESS && shows(">Chest: ") && !shows("UNKNOWN"));
     pressButton();
@@ -178,6 +202,8 @@ int main() {
     feedLine();  // Reconnection selects Desktop.
     assert(motionConnected && shows("BICEP CURL") && shows("BAD") && shows("Reps: 2"));
     assert(shows("Stop torso swinging"));
+    // Reconnecting re-sends both presses' totals so the app can save them.
+    assert(sent("P,4242,SHOULDER,0,10\\n") == 2 && sent("P,4242,CHEST,0,10\\n") == 2);
 }
 """)
     executable = tmp_path / "firmware_test"

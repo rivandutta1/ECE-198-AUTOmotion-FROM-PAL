@@ -60,3 +60,26 @@ def test_opening_the_port_does_not_block_and_waits_for_arduino_boot(monkeypatch)
     clock[0] += serial_link.ARDUINO_STARTUP_S
     link.send_feedback("CURL", "GOOD", "OK", 2)
     assert written == [b"F,CURL,GOOD,OK,2\n"]
+
+
+def test_press_packets_from_the_arduino():
+    totals = serial_link.parse_press_packet("P,48213,CHEST,5,32\r")
+    assert totals == serial_link.PressTotals("48213", "CHEST", 5, 32)
+    for line in ("Chest ROM: 32", "P,48213,BENCH,5,32", "P,48213,CHEST,five,32",
+                 "P,48213,CHEST,5", "F,CURL,GOOD,OK,3", ""):
+        assert serial_link.parse_press_packet(line) is None
+
+
+def test_read_lines_returns_only_complete_lines():
+    class FakePort:
+        chunks = [b"Switched modes\r\nP,1,CHEST,1,", b"20\r\nP,1,SHO", b""]
+        @property
+        def in_waiting(self):
+            return len(self.chunks[0])
+        def read(self, size):
+            return self.chunks.pop(0)
+    link = serial_link.SerialLink(None)
+    link.connection = FakePort()
+    assert link.read_lines() == ["Switched modes"]
+    assert link.read_lines() == ["P,1,CHEST,1,20"]
+    assert link.read_lines() == []  # "P,1,SHO" is still incomplete

@@ -23,10 +23,12 @@ from PySide6.QtWidgets import QWidget
 
 ROOT = Path(__file__).resolve().parent
 
+import history
 from app_modes import EXERCISES, SIDES, create_monitor, evaluate_monitor
 from arm_exercises import Feedback
-from arm_ui import BG, WINDOW_TITLE, WIDTH, HEIGHT, hit_test, paint_dashboard, qt_app
-from serial_link import SerialLink, find_arduino_port
+from arm_ui import (BG, WINDOW_TITLE, WIDTH, HEIGHT, hit_test, paint_dashboard,
+                    paint_history, qt_app)
+from serial_link import SerialLink, find_arduino_port, parse_press_packet
 
 TARGET_UI_HZ = 60.0
 SERIAL_SEND_INTERVAL_S = 0.20
@@ -100,6 +102,8 @@ class CameraWorker:
         self._snapshot = Snapshot(placeholder, None, idle_feedback(),
                                   args.exercise, args.side, False)
         self._last_diagnostic = None
+        self.history_file = Path(getattr(args, "history_file", None) or history.DEFAULT_PATH)
+        self._press_saved = {}  # (session, exercise) -> (reps, rom) last written
 
     # --- Called from the UI thread -------------------------------------
     def start(self):
@@ -151,6 +155,7 @@ class CameraWorker:
             self.cap.release()
             self.cap = new_cap
             self.camera_index = candidate
+            self._save_set()
             self.monitor = create_monitor(self.exercise, self.side)
             self.latest_frame = first_frame
             print(f"Camera switched to {candidate}")
@@ -167,21 +172,59 @@ class CameraWorker:
         """Apply one UI action (button click or key press)."""
         kind, _, value = action.partition(":")
         if kind == "mode" and value in EXERCISES and value != self.exercise:
+            self._save_set()
             self.exercise = value
             self.monitor = create_monitor(self.exercise, self.side)
             self.last_send = -1.0  # tell the Arduino right away
         elif kind == "side" and value in SIDES and value != self.side:
+            self._save_set()
             self.side = value
             self.monitor = create_monitor(self.exercise, self.side)
             self.last_send = -1.0
         elif action == "calibrate":
+            self._save_set()  # a fresh calibration also clears the reps
             self.monitor.start_calibration()
         elif action == "reset":
+            self._save_set()
             self.monitor.reset_reps()
         elif action == "arduino":
             self._connect_arduino()
         elif action == "camera":
             self._switch_to_next_camera()
+
+    def _save_set(self):
+        """Write the current camera set to the history file (if it has reps)."""
+        if self.monitor.reps == 0:
+            return
+        try:
+            history.save_set(self.history_file, self.exercise, self.side,
+                             self.monitor.reps, self.monitor.bad_reps)
+        except OSError as exc:
+            print(f"Could not save set to {self.history_file}: {exc}", flush=True)
+
+    def _save_press_totals(self):
+        """Save shoulder/chest press totals the Arduino has sent (P lines)."""
+        if self.link is None:
+            return
+        try:
+            lines = self.link.read_lines()
+        except Exception as exc:
+            print(f"Arduino disconnected: {exc}", flush=True)
+            self.link.close()
+            return
+        for line in lines:
+            totals = parse_press_packet(line)
+            if totals is None or (totals.reps == 0 and totals.rom_cm == 0):
+                continue
+            key, value = (totals.session, totals.exercise), (totals.reps, totals.rom_cm)
+            if self._press_saved.get(key) == value:
+                continue  # already saved (e.g. resent on reconnect)
+            try:
+                history.save_press(self.history_file, totals.session, totals.exercise,
+                                   totals.reps, totals.rom_cm)
+                self._press_saved[key] = value
+            except OSError as exc:
+                print(f"Could not save press totals to {self.history_file}: {exc}", flush=True)
 
     def _handle_pending_actions(self):
         while True:
@@ -227,6 +270,7 @@ class CameraWorker:
             self._connect_arduino()
             while not self._stop.is_set():
                 self._handle_pending_actions()
+                self._save_press_totals()
 
                 ok, frame = self.cap.read()
                 if not ok:
@@ -253,6 +297,7 @@ class CameraWorker:
                                    Feedback("UNKNOWN", error, "TRACK", 0, 0, "WAITING"),
                                    self.exercise, self.side, False))
         finally:
+            self._save_set()  # the set in progress when the app closes
             if self.link is not None:
                 self.link.close()
             if tracker is not None:
@@ -264,7 +309,7 @@ class CameraWorker:
 KEY_SHORTCUTS = {  # typed character (lower case) -> action
     "1": "mode:curl", "2": "mode:pushdown",
     "l": "side:left", "r": "side:right",
-    "c": "calibrate", "m": "mirror", "q": "quit",
+    "c": "calibrate", "m": "mirror", "q": "quit", "h": "history",
 }
 
 
@@ -272,14 +317,19 @@ class DashboardWindow(QWidget):
     """The app window: paints the worker's latest Snapshot ui_hz times a second
     and turns clicks and key presses into actions.
 
-    The dashboard is laid out in WIDTH x HEIGHT units; the painter is scaled to
-    the window (keeping its shape), so Qt draws it sharp at any size and on
-    high-DPI screens.
+    Two pages: "live" (the dashboard) and "history" (saved sets and press
+    sessions from the history file). Pages are laid out in WIDTH x HEIGHT
+    units; the painter is scaled to the window (keeping its shape), so Qt draws
+    them sharp at any size and on high-DPI screens.
     """
-    def __init__(self, worker, ui_hz: float = TARGET_UI_HZ):
+    def __init__(self, worker, ui_hz: float = TARGET_UI_HZ,
+                 history_file: Path = history.DEFAULT_PATH):
         super().__init__()
         self.worker = worker
         self.mirrored = True
+        self.page = "live"
+        self.history_file = Path(history_file)
+        self._history_cache = (None, [], [])  # (file change time, camera sets, presses)
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WIDTH // 3, HEIGHT // 3)
         self._timer = QTimer(self)
@@ -293,16 +343,40 @@ class DashboardWindow(QWidget):
         return (scale, (self.width() - WIDTH * scale) / 2,
                 (self.height() - HEIGHT * scale) / 2)
 
+    def _saved_history(self):
+        """(camera sets, press sessions), re-read only when the file changes."""
+        try:
+            changed = self.history_file.stat().st_mtime_ns
+        except OSError:
+            changed = None
+        if changed != self._history_cache[0]:
+            entries = history.load(self.history_file) if changed else []
+            self._history_cache = (
+                changed,
+                [e for e in entries if isinstance(e, history.CameraSet)],
+                [e for e in entries if isinstance(e, history.PressSession)])
+        return self._history_cache[1:]
+
+    def _file_label(self):
+        try:
+            return str(self.history_file.resolve().relative_to(ROOT))
+        except ValueError:
+            return str(self.history_file)
+
     def paintEvent(self, event):
-        snap = self.worker.snapshot()
         painter = QPainter(self)
         try:
-            painter.fillRect(self.rect(), QColor(*BG))  # bars around the dashboard
+            painter.fillRect(self.rect(), QColor(*BG))  # bars around the page
             scale, dx, dy = self._placement()
             painter.translate(dx, dy)
             painter.scale(scale, scale)
-            paint_dashboard(painter, snap.frame, snap.landmarks, snap.side, snap.exercise,
-                            snap.feedback, snap.arduino_connected, mirrored=self.mirrored)
+            if self.page == "history":
+                camera_sets, press_sessions = self._saved_history()
+                paint_history(painter, camera_sets, press_sessions, self._file_label())
+            else:
+                snap = self.worker.snapshot()
+                paint_dashboard(painter, snap.frame, snap.landmarks, snap.side, snap.exercise,
+                                snap.feedback, snap.arduino_connected, mirrored=self.mirrored)
         finally:
             painter.end()
 
@@ -311,18 +385,29 @@ class DashboardWindow(QWidget):
             return
         scale, dx, dy = self._placement()
         position = event.position()
-        action = hit_test(int((position.x() - dx) / scale), int((position.y() - dy) / scale))
+        action = hit_test(int((position.x() - dx) / scale), int((position.y() - dy) / scale),
+                          self.page)
         if action:
             self.handle(action)
 
     def keyPressEvent(self, event):
-        action = "quit" if event.key() == Qt.Key_Escape else KEY_SHORTCUTS.get(event.text().lower())
+        if self.page == "history":
+            # Only leaving the page or quitting work here; live controls are hidden.
+            key = event.text().lower()
+            action = ("back" if event.key() == Qt.Key_Escape or key == "h" else
+                      "quit" if key == "q" else None)
+        else:
+            action = ("quit" if event.key() == Qt.Key_Escape else
+                      KEY_SHORTCUTS.get(event.text().lower()))
         if action:
             self.handle(action)
 
     def handle(self, action: str):
         if action == "quit":
             self.close()
+        elif action in ("history", "back"):
+            self.page = "history" if action == "history" else "live"
+            self.update()
         elif action == "mirror":
             self.mirrored = not self.mirrored
             self.update()
@@ -349,6 +434,8 @@ def parse_args(argv=None):
     parser.add_argument("--tracking-width", type=int, default=960)
     parser.add_argument("--ui-hz", type=float, default=TARGET_UI_HZ)
     parser.add_argument("--debug-tracking", action="store_true")
+    parser.add_argument("--history-file", type=Path, default=history.DEFAULT_PATH,
+                        help="where sets and press totals are saved (default: data/history.txt)")
     args = parser.parse_args(argv)
     if args.camera_width < 320 or args.camera_height < 240:
         parser.error("Camera must be at least 320x240")
@@ -366,7 +453,7 @@ def main(argv=None):
     cv2.setUseOptimized(True)
     app = qt_app()
     worker = CameraWorker(args)
-    window = DashboardWindow(worker, args.ui_hz)
+    window = DashboardWindow(worker, args.ui_hz, args.history_file)
     screen = app.primaryScreen().availableGeometry()
     window.resize(*initial_window_size(screen.width(), screen.height()))
     worker.start()

@@ -69,11 +69,19 @@ def controls():
         Button("camera", "Camera", (444, 808, 639, 873)),
         Button("arduino", "Connect Arduino", (652, 808, 878, 873)),
         Button("quit", "Exit", (891, 808, 1096, 873)),
+        Button("history", "History", (1114, 808, 1572, 873)),
     )
 
 
-def hit_test(x: int, y: int):
-    return next((button.action for button in controls() if button.contains(x, y)), None)
+@lru_cache(maxsize=1)
+def history_controls():
+    """Buttons on the History page."""
+    return (Button("back", "Back", (28, 808, 335, 873)),)
+
+
+def hit_test(x: int, y: int, page: str = "live"):
+    buttons = history_controls() if page == "history" else controls()
+    return next((button.action for button in buttons if button.contains(x, y)), None)
 
 
 def point_in_preview(lm, viewport, mirror: bool):
@@ -327,9 +335,7 @@ def paint_dashboard(canvas: QPainter, frame, landmarks, side: str, exercise: str
     canvas.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing |
                           QPainter.SmoothPixmapTransform)
     canvas.fillRect(QRectF(0, 0, WIDTH, HEIGHT), _color(BG))
-    _round(canvas, (25, 26, 66, 67), MINT, radius=13)
-    _ellipse(canvas, (40, 34, 59, 53), LAVENDER)
-    _text(canvas, "AutoMotion", 85, 63, 1.16, TEXT)
+    _header(canvas)
 
     # Tiny device-status chip; technical data stays out of the main UI.
     _round(canvas, (1365, 28, 1572, 75), SURFACE, 18, outline=BORDER)
@@ -393,17 +399,100 @@ def paint_dashboard(canvas: QPainter, frame, landmarks, side: str, exercise: str
           30, 893, .47, SOFT)
 
 
-def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
-                arduino_connected: bool, mirrored: bool = True):
-    """Render the dashboard off-screen at WIDTH x HEIGHT and return it as a
-    BGR NumPy image (used by the tests; the app window paints directly)."""
+HISTORY_ROWS = 14  # rows per History table; older entries stay in the file
+
+
+def _header(canvas, subtitle=None):
+    _round(canvas, (25, 26, 66, 67), MINT, radius=13)
+    _ellipse(canvas, (40, 34, 59, 53), LAVENDER)
+    _text(canvas, "AutoMotion", 85, 63, 1.16, TEXT)
+    if subtitle:
+        _text(canvas, subtitle, 330, 63, .72, MUTED)
+
+
+def _history_table(canvas, rect, title, summary, columns, rows, empty_text):
+    """A panel with a title, a summary line and a table.
+
+    columns: (heading, x offset, align) with align "left" or "right";
+    rows: tuples of cell strings (first cell = date), newest first.
+    """
+    x1, y1, x2, y2 = rect
+    _round(canvas, rect, SURFACE, 23, outline=BORDER)
+    _text(canvas, title, x1+27, y1+49, .80, TEXT)
+    _text(canvas, summary, x1+27, y1+84, .52, MUTED)
+    if not rows:
+        for index, line in enumerate(wrapping(empty_text, 52, 3)):
+            _text(canvas, line, x1+27, y1+150+index*30, .58, SOFT)
+        return
+
+    def cell(value, x, y, align, size, color):
+        left = x1 + x - (_text_width(value, size) if align == "right" else 0)
+        _text(canvas, value, left, y, size, color)
+
+    for heading, x, align in columns:
+        cell(heading.upper(), x, y1+128, align, .44, SOFT)
+    for index, row in enumerate(rows[:HISTORY_ROWS]):
+        y = y1 + 164 + index * 33
+        if index % 2 == 0:
+            _round(canvas, (x1+14, y-23, x2-14, y+10), SURFACE_RAISED, 8)
+        for column, (value, (_, x, align)) in enumerate(zip(row, columns)):
+            cell(value, x, y, align, .52, MUTED if column == 0 else TEXT)  # date quieter
+    hidden = len(rows) - HISTORY_ROWS
+    if hidden > 0:
+        _text(canvas, f"+ {hidden} older in the history file", x1+27, y2-22, .46, SOFT)
+
+
+def paint_history(canvas: QPainter, camera_sets, press_sessions, file_label: str):
+    """The History page: saved camera sets and handheld press sessions, newest first."""
+    canvas.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+    canvas.fillRect(QRectF(0, 0, WIDTH, HEIGHT), _color(BG))
+    _header(canvas, "History")
+
+    reps = sum(entry.reps for entry in camera_sets)
+    _history_table(
+        canvas, (28, 106, 786, 780), "Camera sets",
+        f"{len(camera_sets)} sets, {reps} reps (bicep curl and tricep pushdown)",
+        (("Date", 27, "left"), ("Exercise", 215, "left"), ("Arm", 420, "left"),
+         ("Reps", 600, "right"), ("Flagged", 731, "right")),
+        [(e.when, e.exercise, e.arm.capitalize(), str(e.reps), str(e.flagged))
+         for e in camera_sets],
+        "No sets saved yet. A set is saved when you change exercise or arm, "
+        "reset, recalibrate or exit.")
+    best = max((entry.rom_cm for entry in press_sessions), default=0)
+    _history_table(
+        canvas, (814, 106, 1572, 780), "Handheld presses",
+        f"{len(press_sessions)} sessions, best range of motion {best} cm",
+        (("Date", 27, "left"), ("Exercise", 215, "left"),
+         ("Reps", 520, "right"), ("Max ROM", 731, "right")),
+        [(e.when, e.exercise, str(e.reps), f"{e.rom_cm} cm") for e in press_sessions],
+        "No presses saved yet. Connect the handheld unit to save them.")
+
+    for button in history_controls():
+        _draw_button(canvas, button)
+    _text(canvas, f"Saved in {file_label}", 360, 848, .54, MUTED)
+
+
+def _render(paint, *args):
+    """Run a paint function off-screen at WIDTH x HEIGHT; return a BGR NumPy image."""
     qt_app()
     image = QImage(WIDTH, HEIGHT, QImage.Format_RGB888)
     painter = QPainter(image)
     try:
-        paint_dashboard(painter, frame, landmarks, side, exercise, feedback,
-                        arduino_connected, mirrored)
+        paint(painter, *args)
     finally:
         painter.end()
     rows = np.frombuffer(image.constBits(), np.uint8).reshape(HEIGHT, image.bytesPerLine())
     return rows[:, :WIDTH * 3].reshape(HEIGHT, WIDTH, 3)[..., ::-1].copy()
+
+
+def draw_history(camera_sets, press_sessions, file_label="data/history.txt"):
+    """The History page as a BGR NumPy image (used by the tests)."""
+    return _render(paint_history, camera_sets, press_sessions, file_label)
+
+
+def draw_screen(frame, landmarks, side: str, exercise: str, feedback: Feedback,
+                arduino_connected: bool, mirrored: bool = True):
+    """Render the dashboard off-screen at WIDTH x HEIGHT and return it as a
+    BGR NumPy image (used by the tests; the app window paints directly)."""
+    return _render(paint_dashboard, frame, landmarks, side, exercise, feedback,
+                   arduino_connected, mirrored)

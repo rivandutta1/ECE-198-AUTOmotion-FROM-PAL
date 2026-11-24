@@ -109,6 +109,8 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
    **Reset reps** clears the counts and preserves your calibration.
    **Mirror** flips the preview and overlay together while keeping the selected
    anatomical arm the same. **Camera** tries other available indices from 0–3.
+4. **History** (or `H`) shows your saved workouts; **Back** (or `H` / `Esc`)
+   returns. See [Saved history](#saved-history).
 
 | Key | Action |
 | --- | --- |
@@ -116,7 +118,8 @@ apps to access the camera. [Windows camera permissions](https://support.microsof
 | `L` / `R` | Select left / right arm |
 | `C` | Recalibrate now (also clears reps) |
 | `M` | Toggle mirror preview |
-| `Q` / `Esc` | Exit |
+| `H` | Open / close the History page |
+| `Q` / `Esc` | Exit (`Esc` on the History page goes back) |
 
 Use `main.py --help` with the environment's interpreter for all options. On
 macOS and Linux, `./main.py` works from the repository root: its first line
@@ -125,6 +128,7 @@ ways of launching it are unaffected.
 `--exercise pushdown` and `--side left` change the startup selections.
 `--camera 1` requests index 1 and falls back to 0 if it cannot open.
 `--debug-tracking` logs changes in the tracking or form decision.
+`--history-file` saves the history somewhere other than `data/history.txt`.
 `--tracking-width` controls the maximum inference frame width (default 960).
 `--camera-width`, `--camera-height` and `--camera-fps` request 1280×720 at 30 FPS
 by default. The camera driver may negotiate different settings. `--ui-hz`
@@ -220,8 +224,12 @@ one recognized USB port or honors an explicit override. It sends newline-ended
 ASCII like `F,CURL,GOOD,OK,3` at 115200 baud, with fields for exercise, status,
 issue, and reps. The worker attempts a send about every 200 ms while processing
 frames. The link is optional and the UI's connected indicator reports an open
-port, without a firmware acknowledgment. Communication is one-way: the app
-never reads from the Arduino. The FROM-PAL sketch consumes the
+port, without a firmware acknowledgment. In the other direction, the Arduino
+sends `P,<SESSION>,<SHOULDER|CHEST>,<REPS>,<MAX ROM CM>` whenever a handheld
+press total changes and again whenever the app connects; the worker reads
+these lines and saves them (other lines the Arduino prints are ignored). The
+`SESSION` number is picked at random each time the Arduino powers on. The
+FROM-PAL sketch consumes the
 result in Desktop mode and has its own independent Shoulder and Chest modes.
 Its button cycles through the modes. The first valid packet on a connection
 selects Desktop. The Desktop screen shows the exercise, the status in large
@@ -229,6 +237,29 @@ text, a short explanation of the issue code just below it (for example `LEAN`
 → "Stop torso swinging"), and the rep count. It shows **NO CONNECTION**
 after 1.2 seconds without valid feedback. The firmware and hardware libraries are
 separate from the desktop app setup.
+
+## Saved history
+
+Everything is saved in one plain text file, `data/history.txt` next to
+`main.py` (git ignores the `data/` folder). You can open it in any text editor;
+the app's **History** page shows the same data, newest first, and survives
+restarts. Each line is one entry:
+
+```text
+2026-11-24 14:03 | Bicep curl | right arm | 12 reps | 2 flagged
+2026-11-24 14:05 | Chest press | 5 reps | max ROM 32 cm | session 48213
+```
+
+- **Camera sets** are saved when a set ends: when you switch exercise or arm,
+  press **Reset reps** or `C`, change camera, or close the app. Sets with 0
+  reps are not saved.
+- **Handheld presses** (shoulder and chest) are saved as one line per
+  exercise per Arduino power-on, updated as the reps and max range of motion
+  grow. The handheld unit's counters only reset when it is switched off.
+  Presses done while the unit isn't plugged in are saved as soon as it is
+  connected to the running app, as long as it hasn't been switched off.
+
+Lines the app can't read (for example your own notes) are kept and ignored.
 
 ## Repository map
 
@@ -239,7 +270,8 @@ separate from the desktop app setup.
 | [`app_modes.py`](app_modes.py) | The supported exercises and arms, plus `create_monitor()` / `evaluate_monitor()`. |
 | [`arm_exercises.py`](arm_exercises.py) | `measure_arm()` turns landmarks into angles; `ArmExerciseMonitor` handles calibration, form warnings, and rep counting. No camera dependency. |
 | [`arm_ui.py`](arm_ui.py) | Draws the dashboard and maps mouse clicks to actions (`hit_test`). |
-| [`serial_link.py`](serial_link.py) | Builds `F,...` packets and finds and opens the Arduino USB port. |
+| [`serial_link.py`](serial_link.py) | Builds `F,...` packets, reads the Arduino's `P,...` press totals, and finds and opens the Arduino USB port. |
+| [`history.py`](history.py) | Reads and writes the history file (`data/history.txt`): camera sets and handheld press sessions. |
 | [`FROM-PAL/`](FROM-PAL) | Arduino firmware. `FROM-PAL.ino` handles the OLED, button, and independent ultrasonic Shoulder/Chest tracking with Wire and Adafruit libraries. `auto_motion_display.h` parses the app's serial packets and draws the Desktop view. |
 | [`legacy/`](legacy) | Archived, unused code: the first camera demo with its shoulder/chest press rules and tests, and two earlier standalone OLED sketches. See [`legacy/README.md`](legacy/README.md). |
 | [`requirements.txt`](requirements.txt), [`pytest.ini`](pytest.ini), [`tests/`](tests) | Python dependencies, test settings, and the automated tests for the app and the FROM-PAL protocol. |
@@ -264,10 +296,11 @@ synthetic landmarks, fake hardware, and Qt's off-screen mode
 | [`test_app_modes.py`](tests/test_app_modes.py) | Only curl and pushdown, on the left or right arm, can be monitored. |
 | [`test_arm_measurement.py`](tests/test_arm_measurement.py) | `measure_arm()`: joint angles from landmarks, confidence and visibility limits, the opposite-hip fallback, and rejection of off-screen, overlapping, or missing joints. |
 | [`test_exercise_monitor.py`](tests/test_exercise_monitor.py) | `ArmExerciseMonitor`: automatic calibration (holding still, correct start pose, retrying after movement, short dropouts, recalibrating after 5 s out of view), good and partial reps for both exercises, torso-lean and upper-arm warnings, rejection of too-fast or double-counted reps, and tracking loss. |
-| [`test_dashboard_ui.py`](tests/test_dashboard_ui.py) | `arm_ui.py`: the dashboard renders for every status, exercise, and mirror setting; buttons are large and clickable; the overlay follows mirroring; every measurement is shown and fits in the panel. |
-| [`test_serial_link.py`](tests/test_serial_link.py) | `serial_link.py`: `F` packet format, rejection of invalid values, Arduino port auto-detection, and that connecting doesn't block while the board boots. |
-| [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), the Qt window turning clicks and keys into actions (run off-screen, no window appears), the starting window size, the UI rate, and the downscaling of inference frames. |
-| [`test_from_pal_protocol.py`](tests/test_from_pal_protocol.py) | Compiles the real `FROM-PAL` sketch for your computer with simulated Arduino hardware and feeds it packets made by `serial_link.py`: mode button, Desktop screen, timeouts, and malformed lines. Skipped if no `c++` compiler is installed. |
+| [`test_dashboard_ui.py`](tests/test_dashboard_ui.py) | `arm_ui.py`: the dashboard renders for every status, exercise, and mirror setting; buttons are large and clickable; the overlay follows mirroring; every measurement is shown and fits in the panel; the History page renders with and without entries and its Back button works. |
+| [`test_serial_link.py`](tests/test_serial_link.py) | `serial_link.py`: `F` packet format, rejection of invalid values, reading and checking the Arduino's `P` press lines, Arduino port auto-detection, and that connecting doesn't block while the board boots. |
+| [`test_history.py`](tests/test_history.py) | `history.py`: line format, ignoring unreadable lines, appending sets, newest-first loading, and updating one press line per Arduino session. |
+| [`test_camera_worker.py`](tests/test_camera_worker.py) | `main.py`: the worker thread with a fake camera, tracker, and Arduino (exercise/arm switching, camera fallback, packets sent), saving a set when it ends and press totals once per change, the Qt window turning clicks and keys into actions and opening/closing the History page (run off-screen, no window appears), the starting window size, the UI rate, and the downscaling of inference frames. |
+| [`test_from_pal_protocol.py`](tests/test_from_pal_protocol.py) | Compiles the real `FROM-PAL` sketch for your computer with simulated Arduino hardware and feeds it packets made by `serial_link.py`: mode button, Desktop screen, timeouts, malformed lines, and the `P` press totals it sends back (after each press and on reconnecting). Skipped if no `c++` compiler is installed. |
 | [`landmark_helpers.py`](tests/landmark_helpers.py) | Not a test: builds the synthetic arm poses used by the measurement and monitor tests. |
 
 Tests archived in `legacy/` are not run. Real camera accuracy, OS-specific
