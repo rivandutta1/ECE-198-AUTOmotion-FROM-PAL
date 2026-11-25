@@ -104,3 +104,23 @@ def test_font_is_an_installed_family_or_the_qt_default():
     from PySide6.QtGui import QFontDatabase
     family = ui.font_family()
     assert family in QFontDatabase.families() or family == ui.QApplication.font().family()
+
+
+def test_history_page_renders_with_and_without_entries():
+    import history
+    sets = [history.CameraSet("2026-11-24 14:03", "Bicep curl", "right", 12, 2)] * 20
+    presses = [history.PressSession("2026-11-24 14:05", "Chest press", 5, 32, "1")]
+    for args in ((sets, presses), ([], [])):
+        image = ui.draw_history(*args)
+        assert image.shape == (HEIGHT, WIDTH, 3) and image.sum() > 0
+
+
+def test_history_button_and_back_button():
+    history_button = next(b for b in controls() if b.action == "history")
+    x1, y1, x2, y2 = history_button.rect
+    assert hit_test((x1 + x2) // 2, (y1 + y2) // 2) == "history"
+    back = ui.history_controls()[0]
+    x1, y1, x2, y2 = back.rect
+    assert hit_test((x1 + x2) // 2, (y1 + y2) // 2, "history") == "back"
+    # Live buttons don't respond on the History page.
+    assert hit_test(*controls()[0].rect[:2], "history") is None

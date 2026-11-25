@@ -41,7 +41,9 @@ def test_ui_renders_idle_feedback():
 
 
 @pytest.mark.parametrize("camera_one_available", [True, False])
-def test_worker_background_operations_without_real_webcam(monkeypatch, camera_one_available):
+def test_worker_background_operations_without_real_webcam(monkeypatch, camera_one_available,
+                                                          tmp_path):
+    history_file = tmp_path / "history.txt"
     closed = threading.Event()
     sent_feedback = []
     camera_attempts = []
@@ -65,6 +67,8 @@ def test_worker_background_operations_without_real_webcam(monkeypatch, camera_on
         connection = object()
         def send_feedback(self, *args):
             sent_feedback.append(args)
+        def read_lines(self):
+            return []
         def close(self):
             pass
 
@@ -81,6 +85,7 @@ def test_worker_background_operations_without_real_webcam(monkeypatch, camera_on
         exercise="curl", side="right", camera=1,
         camera_width=320, camera_height=240, camera_fps=24,
         tracking_width=960, model="lite", port=None, debug_tracking=False,
+        history_file=history_file,
     )
     worker = main.CameraWorker(args)
     worker.start()
@@ -148,3 +153,65 @@ def test_initial_window_fits_the_screen():
     assert main.initial_window_size(2560, 1440) == (WIDTH, HEIGHT)
     width, height = main.initial_window_size(1504, 1003)
     assert width <= round(1504 * .9) and abs(width / height - WIDTH / HEIGHT) < .01
+
+
+
+def worker_with_history(tmp_path):
+    worker = CameraWorker(SimpleNamespace(exercise="curl", side="right",
+                                          history_file=tmp_path / "history.txt"))
+    worker.exercise, worker.side = "curl", "right"
+    worker.monitor = main.create_monitor("curl", "right")
+    worker.link = None
+    return worker
+
+
+def test_a_set_is_saved_when_it_ends(tmp_path):
+    import history
+    worker = worker_with_history(tmp_path)
+    worker._handle_action("mode:pushdown")  # no reps yet: nothing saved
+    assert history.load(worker.history_file) == []
+    worker.monitor.reps, worker.monitor.bad_reps = 6, 1
+    worker._handle_action("reset")
+    worker.monitor.reps = 4
+    worker._handle_action("side:left")
+    saved = [(e.exercise, e.arm, e.reps, e.flagged) for e in history.load(worker.history_file)]
+    assert saved == [("Tricep pushdown", "right", 4, 0), ("Tricep pushdown", "right", 6, 1)]
+
+
+def test_press_totals_from_the_arduino_are_saved_once_per_change(tmp_path):
+    import history
+    worker = worker_with_history(tmp_path)
+    class Link:
+        connection = object()
+        incoming = [["Switched modes", "P,9,CHEST,0,0", "P,9,CHEST,1,20"],
+                    ["P,9,CHEST,1,20"], ["P,9,CHEST,2,31"]]
+        def read_lines(self):
+            return self.incoming.pop(0)
+    worker.link = Link()
+    for _ in range(3):
+        worker._save_press_totals()
+    lines = worker.history_file.read_text().splitlines()
+    assert len(lines) == 1 and "2 reps | max ROM 31 cm | session 9" in lines[0]
+
+
+def test_window_opens_and_closes_the_history_page(tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    import arm_ui
+    import history
+    path = tmp_path / "history.txt"
+    history.save_set(path, "curl", "right", 7, 0)
+    main.qt_app()
+    worker = FakeWorker()
+    window = main.DashboardWindow(worker, history_file=path)
+    window.resize(WIDTH // 2, HEIGHT // 2)
+    window.show()
+    QTest.keyClick(window, Qt.Key_H)
+    assert window.page == "history"
+    assert not window.grab().isNull()  # paints the saved set
+    QTest.keyClick(window, Qt.Key_1)  # live shortcuts are ignored here
+    assert worker.sent == []
+    x1, y1, x2, y2 = arm_ui.history_controls()[0].rect
+    QTest.mouseClick(window, Qt.LeftButton, pos=QPoint((x1 + x2) // 4, (y1 + y2) // 4))
+    assert window.page == "live"
+    window.close()

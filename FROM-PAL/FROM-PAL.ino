@@ -35,6 +35,10 @@ int repCountShoulder = 0;
 
 int startingDistance = 0;
 
+// Random per power-on, so the desktop app can tell this session's totals
+// apart from earlier ones and update one saved line per session.
+unsigned long sessionId = 0;
+
 // Automatic turning-point detection
 const int MAX_JUMP_CM = 15;                  // readings further than this from the last one are treated as noise
 const int MIN_MOVE_CM = 8;                   // must reverse by this much to confirm a turning point (raise if still over-counting)
@@ -86,7 +90,26 @@ void setup() {
         }
     }
     if (!oledReady) Serial.println("OLED unavailable: check SSD1306 wiring and I2C address");
+
+    // A floating analog pin plus the boot time gives a different seed each power-on.
+    randomSeed(analogRead(A0) ^ micros());
+    sessionId = random(1, 1000000);
     updateDisplay();
+}
+
+// Sends one press's totals to the desktop app so it can save them:
+//   P,<session>,<SHOULDER|CHEST>,<reps>,<max ROM in cm>
+// Nothing is sent before that press has any reps or range of motion.
+void sendPressTotals(bool chest) {
+    const int reps = (chest ? repCountChest : repCountShoulder) / 2;
+    const int rom = chest ? maxChestROM : maxShoulderROM;
+    if (reps == 0 && rom == 0) return;
+    Serial.print("P,");
+    Serial.print(sessionId);
+    Serial.print(chest ? ",CHEST," : ",SHOULDER,");
+    Serial.print(reps);
+    Serial.print(',');
+    Serial.println(rom);
 }
 
 void loop() {
@@ -105,6 +128,11 @@ void loop() {
         // Auto-select Desktop once per connection. The button can leave it
         // while packets continue to arrive.
         displayMode = DESKTOP_MODE;
+    }
+    if (!wasConnected && motionConnected) {
+        // The app just (re)connected: send presses done while it was away.
+        sendPressTotals(false);
+        sendPressTotals(true);
     }
 
     if (displayMode != previousMode) {
@@ -151,6 +179,7 @@ void registerRep(int currentDistance) {
         Serial.print("Shoulder ROM: ");
         Serial.println(maxShoulderROM);
     }
+    sendPressTotals(isChestPress);
     updateDisplay();
 }
 
